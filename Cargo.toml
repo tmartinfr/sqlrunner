@@ -1,0 +1,7 @@
+[package]
+name = "sqlrunner"
+version = "0.1.0"
+edition = "2024"
+description = "A handy tool for running SQL queries"
+
+[dependencies]
