@@ -13,6 +13,10 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     sql_dir: PathBuf,
 
+    /// Connection string psql must connect with
+    #[arg(long, value_name = "DSN")]
+    dsn: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -230,8 +234,18 @@ fn shell_quote(argument: &str) -> String {
 }
 
 /// Renders the psql command line running `file` with `variables` set.
-fn format_psql_command(file: &Path, variables: &BTreeMap<String, String>) -> String {
+///
+/// Without a `dsn`, psql takes its connection settings from the environment.
+fn format_psql_command(
+    file: &Path,
+    dsn: Option<&str>,
+    variables: &BTreeMap<String, String>,
+) -> String {
     let mut command = String::from("psql");
+
+    if let Some(dsn) = dsn {
+        command.push_str(&format!(" -d {}", shell_quote(dsn)));
+    }
 
     for (name, value) in variables {
         command.push_str(&format!(" -v {}", shell_quote(&format!("{name}={value}"))));
@@ -245,7 +259,12 @@ fn format_psql_command(file: &Path, variables: &BTreeMap<String, String>) -> Str
 ///
 /// The file must be one of those listed, and the assignments must cover exactly
 /// the variables it uses.
-fn run(dir: &Path, file: &str, assignments: &[String]) -> Result<String, String> {
+fn run(
+    dir: &Path,
+    dsn: Option<&str>,
+    file: &str,
+    assignments: &[String],
+) -> Result<String, String> {
     let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
     let path = files
@@ -278,7 +297,7 @@ fn run(dir: &Path, file: &str, assignments: &[String]) -> Result<String, String>
         return Err(format!("{file}: unset variables: {}", missing.join(", ")));
     }
 
-    Ok(format_psql_command(path, &variables))
+    Ok(format_psql_command(path, dsn, &variables))
 }
 
 /// Prints the `.sql` files of `dir` and the variables they use.
@@ -320,16 +339,18 @@ fn main() -> ExitCode {
 
     match cli.command {
         None | Some(Command::List) => list(&cli.sql_dir),
-        Some(Command::Run { file, variables }) => match run(&cli.sql_dir, &file, &variables) {
-            Ok(command) => {
-                println!("{command}");
-                ExitCode::SUCCESS
+        Some(Command::Run { file, variables }) => {
+            match run(&cli.sql_dir, cli.dsn.as_deref(), &file, &variables) {
+                Ok(command) => {
+                    println!("{command}");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    eprintln!("sqlrunner: {err}");
+                    ExitCode::FAILURE
+                }
             }
-            Err(err) => {
-                eprintln!("sqlrunner: {err}");
-                ExitCode::FAILURE
-            }
-        },
+        }
     }
 }
 
@@ -486,6 +507,7 @@ mod tests {
 
         let command = run(
             &dir,
+            None,
             "orders.sql",
             &["owner=a's shop".to_string(), "start=2026-08-04".to_string()],
         )
@@ -501,12 +523,46 @@ mod tests {
     }
 
     #[test]
+    fn runs_a_file_against_a_dsn() {
+        let dir = temp_dir("runs-a-file-against-a-dsn");
+        std::fs::write(dir.join("stats.sql"), "SELECT :'day';").unwrap();
+
+        let dsn = "postgresql://user@host:5432/db?sslmode=require";
+        let command = run(&dir, Some(dsn), "stats.sql", &["day=2026-08-04".into()]).unwrap();
+
+        // The `?` of the query string is quoted, as a shell would expand it.
+        assert_eq!(
+            command,
+            format!(
+                "psql -d '{dsn}' -v day=2026-08-04 -f {}",
+                dir.join("stats.sql").display()
+            )
+        );
+    }
+
+    #[test]
+    fn quotes_a_dsn_needing_it() {
+        let dir = temp_dir("quotes-a-dsn-needing-it");
+        std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
+
+        let command = run(&dir, Some("host=localhost dbname=db"), "stats.sql", &[]).unwrap();
+
+        assert_eq!(
+            command,
+            format!(
+                "psql -d 'host=localhost dbname=db' -f {}",
+                dir.join("stats.sql").display()
+            )
+        );
+    }
+
+    #[test]
     fn runs_a_file_without_variable() {
         let dir = temp_dir("runs-a-file-without-variable");
         std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
 
         assert_eq!(
-            run(&dir, "stats.sql", &[]).unwrap(),
+            run(&dir, None, "stats.sql", &[]).unwrap(),
             format!("psql -f {}", dir.join("stats.sql").display())
         );
     }
@@ -517,10 +573,10 @@ mod tests {
         std::fs::write(dir.join("orders.sql"), "SELECT :'start';").unwrap();
 
         // An unknown file, an unset variable, an unused one, and a duplicate.
-        assert!(run(&dir, "missing.sql", &[]).is_err());
-        assert!(run(&dir, "orders.sql", &[]).is_err());
-        assert!(run(&dir, "orders.sql", &["start=1".into(), "other=2".into()]).is_err());
-        assert!(run(&dir, "orders.sql", &["start=1".into(), "start=2".into()]).is_err());
+        assert!(run(&dir, None, "missing.sql", &[]).is_err());
+        assert!(run(&dir, None, "orders.sql", &[]).is_err());
+        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "other=2".into()]).is_err());
+        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "start=2".into()]).is_err());
     }
 
     #[test]
@@ -529,8 +585,8 @@ mod tests {
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/orders.sql"), "SELECT 1;").unwrap();
 
-        assert!(run(&dir, "sub/orders.sql", &[]).is_err());
-        assert!(run(&dir, "../orders.sql", &[]).is_err());
+        assert!(run(&dir, None, "sub/orders.sql", &[]).is_err());
+        assert!(run(&dir, None, "../orders.sql", &[]).is_err());
     }
 
     #[test]

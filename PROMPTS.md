@@ -5,3 +5,4 @@ Extract the psql-style variables (:'variable') that could be present in files an
 Exclude matches inside literals or comments
 Arrange output in a two-colums table
 Add "run" sub command who takes one of the available SQL files as first argument, then some key=value options. Output a valid psql command line that run the SQL file with its variables set from the key-value options. "--sql-dir" should remain a top level option.
+Add top level --dsn option to tell sqlrunner where psql must connect

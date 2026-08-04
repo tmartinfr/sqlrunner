@@ -21,7 +21,7 @@ cargo build --release
 ## Usage
 
 ```
-Usage: sqlrunner --sql-dir <DIR> [COMMAND]
+Usage: sqlrunner [OPTIONS] --sql-dir <DIR> [COMMAND]
 
 Commands:
   list  List the .sql files and the variables they use (default)
@@ -30,11 +30,12 @@ Commands:
 
 Options:
       --sql-dir <DIR>  Directory containing the .sql files
+      --dsn <DSN>      Connection string psql must connect with
   -h, --help           Print help
   -V, --version        Print version
 ```
 
-`--sql-dir` is a top-level option and comes before the subcommand.
+`--sql-dir` and `--dsn` are top-level options and come before the subcommand.
 
 ### list
 
@@ -72,9 +73,28 @@ path is not accepted. Each variable the file uses must be assigned exactly once,
 and only those it uses may be assigned. Everything after the first `=` is the
 value, so it may itself contain `=` or be empty.
 
-Values are quoted for a POSIX shell, so the output can be evaluated as is. The
-resulting `psql` call takes its connection settings from the environment
-(`PGHOST`, `PGDATABASE`, ...) as usual.
+Values are quoted for a POSIX shell, so the output can be evaluated as is.
+
+`--dsn` tells psql where to connect, as a `-d` argument. Both forms psql accepts
+are passed through untouched, a URI:
+
+```sh
+$ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
+    run users.sql user_id=42
+psql -d postgresql://me@db.example.com/prod -v user_id=42 -f ./queries/users.sql
+```
+
+or a keyword/value string:
+
+```sh
+$ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
+    run users.sql user_id=42
+psql -d 'host=localhost dbname=prod' -v user_id=42 -f ./queries/users.sql
+```
+
+Without `--dsn`, no `-d` is emitted and psql takes its connection settings from
+the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused by
+`list`, which reads no database.
 
 A bad invocation is reported on stderr and exits with status 1:
 
