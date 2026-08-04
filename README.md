@@ -53,9 +53,17 @@ SELECT * FROM orders WHERE created_at >= :'start_date';
 
 Names are made of ASCII letters, digits and underscores. They are reported
 sorted and deduplicated; a file with no variable is listed on its own. Other
-psql forms (`:name`, `:"name"`) are not detected, and occurrences inside string
-literals or comments are not filtered out. A file that cannot be read is
-reported on stderr, the other files are still listed, and the exit status is 1.
+psql forms (`:name`, `:"name"`) are not detected.
+
+Occurrences that psql would not interpolate are ignored:
+
+- `--` line comments and `/* */` block comments, including nested ones;
+- string literals `'...'`, with `''` and, for `E'...'`, backslash escapes;
+- dollar-quoted strings `$$...$$` and `$tag$...$tag$`;
+- quoted identifiers `"..."`.
+
+A file that cannot be read is reported on stderr, the other files are still
+listed, and the exit status is 1.
 
 ## Test
 

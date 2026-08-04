@@ -29,28 +29,135 @@ fn list_sql_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Tells whether `byte` can be part of a variable or dollar-quote tag name.
+fn is_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
 /// Returns the psql-style variables `:'name'` used in `sql`, sorted and deduplicated.
 ///
 /// A name is made of ASCII alphanumeric characters and underscores; anything
 /// else between the quotes is not a variable reference and is skipped.
+/// Occurrences inside comments, string literals, dollar-quoted strings and
+/// quoted identifiers are ignored, as psql does not interpolate them there.
 fn extract_variables(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
     let mut variables = BTreeSet::new();
-    let mut rest = sql;
+    let mut i = 0;
 
-    while let Some(start) = rest.find(":'") {
-        rest = &rest[start + 2..];
+    while i < bytes.len() {
+        let next = bytes.get(i + 1).copied();
 
-        let Some(end) = rest.find('\'') else { break };
-        let (name, after) = (&rest[..end], &rest[end + 1..]);
+        match bytes[i] {
+            b':' if next == Some(b'\'') => {
+                let start = i + 2;
+                let end = start + bytes[start..].iter().take_while(|&&b| is_name_byte(b)).count();
 
-        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
-            variables.insert(name.to_string());
+                if end > start && bytes.get(end) == Some(&b'\'') {
+                    variables.insert(sql[start..end].to_string());
+                    i = end + 1;
+                } else {
+                    // Not a variable: skip the colon so the quote that follows
+                    // is handled as the start of a string literal.
+                    i += 1;
+                }
+            }
+            b'-' if next == Some(b'-') => i = skip_line_comment(bytes, i),
+            b'/' if next == Some(b'*') => i = skip_block_comment(bytes, i),
+            // An `E'...'` literal additionally uses backslash escapes.
+            b'\'' => {
+                let extended = i >= 1
+                    && matches!(bytes[i - 1], b'e' | b'E')
+                    && (i < 2 || !is_name_byte(bytes[i - 2]));
+                i = skip_quoted(bytes, i, extended);
+            }
+            b'"' => i = skip_quoted(bytes, i, false),
+            b'$' => i = skip_dollar_quoted(bytes, i),
+            _ => i += 1,
         }
-
-        rest = after;
     }
 
     variables.into_iter().collect()
+}
+
+/// Skips the `--` comment starting at `start`, returning the index of its newline.
+fn skip_line_comment(bytes: &[u8], start: usize) -> usize {
+    match bytes[start..].iter().position(|&b| b == b'\n') {
+        Some(offset) => start + offset,
+        None => bytes.len(),
+    }
+}
+
+/// Skips the `/* */` comment starting at `start`, returning the index just after it.
+///
+/// Such comments nest in PostgreSQL, so the opening markers are counted.
+fn skip_block_comment(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 2;
+    let mut depth = 1;
+
+    while i + 1 < bytes.len() {
+        match (bytes[i], bytes[i + 1]) {
+            (b'/', b'*') => {
+                depth += 1;
+                i += 2;
+            }
+            (b'*', b'/') => {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    bytes.len()
+}
+
+/// Skips the string or quoted identifier opened at `start`, returning the index
+/// just after its closing quote.
+///
+/// The quote character is doubled to escape itself; `extended` additionally
+/// enables backslash escapes, as in an `E'...'` literal.
+fn skip_quoted(bytes: &[u8], start: usize, extended: bool) -> usize {
+    let quote = bytes[start];
+    let mut i = start + 1;
+
+    while i < bytes.len() {
+        if extended && bytes[i] == b'\\' {
+            i += 2;
+        } else if bytes[i] != quote {
+            i += 1;
+        } else if bytes.get(i + 1) == Some(&quote) {
+            i += 2;
+        } else {
+            return i + 1;
+        }
+    }
+
+    bytes.len()
+}
+
+/// Skips the `$tag$ ... $tag$` string opened at `start`, returning the index
+/// just after its closing tag.
+///
+/// Returns `start + 1` when the `$` does not open one, as in `$1`.
+fn skip_dollar_quoted(bytes: &[u8], start: usize) -> usize {
+    let tag_end = start + 1 + bytes[start + 1..].iter().take_while(|&&b| is_name_byte(b)).count();
+
+    // A tag is optional but cannot start with a digit, which `$1` does.
+    if bytes.get(tag_end) != Some(&b'$') || bytes[start + 1].is_ascii_digit() {
+        return start + 1;
+    }
+
+    let tag = &bytes[start..=tag_end];
+    let body = tag_end + 1;
+
+    match bytes[body..].windows(tag.len()).position(|w| w == tag) {
+        Some(offset) => body + offset + tag.len(),
+        None => bytes.len(),
+    }
 }
 
 fn main() -> ExitCode {
@@ -154,5 +261,38 @@ mod tests {
     #[test]
     fn extracts_no_variable_from_plain_sql() {
         assert!(extract_variables("SELECT 1;").is_empty());
+    }
+
+    #[test]
+    fn ignores_variables_inside_comments() {
+        let sql = "-- see :'commented_out'\n\
+                   /* :'block' /* :'nested' */ still a comment :'deep' */\n\
+                   SELECT :'kept'; -- :'trailing'";
+
+        assert_eq!(extract_variables(sql), vec!["kept"]);
+    }
+
+    #[test]
+    fn ignores_variables_inside_literals_and_identifiers() {
+        let sql = "SELECT ':''not_a_var''', \"col :'not_a_var'\", \
+                   E'escaped \\' :''not_a_var''', \
+                   $body$ :'not_a_var' $body$, $1, :'kept';";
+
+        assert_eq!(extract_variables(sql), vec!["kept"]);
+    }
+
+    #[test]
+    fn keeps_scanning_after_a_doubled_quote_in_a_literal() {
+        let sql = "SELECT 'it''s :''hidden'' here', :'kept';";
+
+        assert_eq!(extract_variables(sql), vec!["kept"]);
+    }
+
+    #[test]
+    fn unterminated_literals_and_comments_do_not_loop() {
+        assert!(extract_variables("SELECT 'oops :'x'").is_empty());
+        assert!(extract_variables("/* oops :'x'").is_empty());
+        assert!(extract_variables("SELECT $tag$ oops :'x'").is_empty());
+        assert!(extract_variables("SELECT $").is_empty());
     }
 }
