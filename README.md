@@ -28,14 +28,15 @@ Options:
   -V, --version        Print version
 ```
 
-List the `.sql` files of a directory, one base filename per line, sorted, each
-followed by the psql-style variables it uses:
+List the `.sql` files of a directory as a two-column table, sorted by base
+filename, with the psql-style variables each file uses:
 
 ```sh
 $ sqlrunner --sql-dir ./queries
-orders.sql: end_date, start_date, status
+FILE        VARIABLES
+orders.sql  end_date, start_date, status
 stats.sql
-users.sql: user_id
+users.sql   user_id
 ```
 
 Only regular files directly inside the directory are listed: subdirectories are
@@ -52,7 +53,8 @@ SELECT * FROM orders WHERE created_at >= :'start_date';
 ```
 
 Names are made of ASCII letters, digits and underscores. They are reported
-sorted and deduplicated; a file with no variable is listed on its own. Other
+sorted and deduplicated; a file with no variable has an empty second column.
+Other
 psql forms (`:name`, `:"name"`) are not detected.
 
 Occurrences that psql would not interpolate are ignored:

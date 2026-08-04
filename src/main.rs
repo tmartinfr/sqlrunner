@@ -160,6 +160,34 @@ fn skip_dollar_quoted(bytes: &[u8], start: usize) -> usize {
     }
 }
 
+/// Renders `rows` as a two-column table, the first column padded to a common width.
+///
+/// The header is included, and an empty second column leaves no trailing space.
+fn format_table(headers: (&str, &str), rows: &[(String, String)]) -> String {
+    let width = rows
+        .iter()
+        .map(|(left, _)| left.chars().count())
+        .chain(std::iter::once(headers.0.chars().count()))
+        .max()
+        .unwrap_or(0);
+
+    let mut table = String::new();
+
+    for (left, right) in std::iter::once((headers.0.to_string(), headers.1.to_string()))
+        .chain(rows.iter().cloned())
+    {
+        if right.is_empty() {
+            table.push_str(&left);
+        } else {
+            let padding = " ".repeat(width - left.chars().count());
+            table.push_str(&format!("{left}{padding}  {right}"));
+        }
+        table.push('\n');
+    }
+
+    table
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -172,25 +200,24 @@ fn main() -> ExitCode {
     };
 
     let mut exit_code = ExitCode::SUCCESS;
+    let mut rows = Vec::new();
 
     for file in files {
-        // `file_name` is always set: only paths with a `.sql` extension are listed.
-        let name = file.file_name().unwrap_or_default().display();
-
         match std::fs::read_to_string(&file) {
             Ok(sql) => {
-                let variables = extract_variables(&sql);
-                if variables.is_empty() {
-                    println!("{name}");
-                } else {
-                    println!("{name}: {}", variables.join(", "));
-                }
+                // `file_name` is always set: only paths with a `.sql` extension are listed.
+                let name = file.file_name().unwrap_or_default().to_string_lossy();
+                rows.push((name.into_owned(), extract_variables(&sql).join(", ")));
             }
             Err(err) => {
                 eprintln!("sqlrunner: {}: {}", file.display(), err);
                 exit_code = ExitCode::FAILURE;
             }
         }
+    }
+
+    if !rows.is_empty() {
+        print!("{}", format_table(("FILE", "VARIABLES"), &rows));
     }
 
     exit_code
@@ -286,6 +313,32 @@ mod tests {
         let sql = "SELECT 'it''s :''hidden'' here', :'kept';";
 
         assert_eq!(extract_variables(sql), vec!["kept"]);
+    }
+
+    #[test]
+    fn formats_a_two_column_table() {
+        let rows = vec![
+            ("comments.sql".to_string(), "owner, start_date".to_string()),
+            ("stats.sql".to_string(), String::new()),
+        ];
+
+        assert_eq!(
+            format_table(("FILE", "VARIABLES"), &rows),
+            "FILE          VARIABLES\n\
+             comments.sql  owner, start_date\n\
+             stats.sql\n"
+        );
+    }
+
+    #[test]
+    fn table_column_is_at_least_as_wide_as_its_header() {
+        let rows = vec![("a.sql".to_string(), "v".to_string())];
+
+        assert_eq!(
+            format_table(("FILE", "VARIABLES"), &rows),
+            "FILE   VARIABLES\n\
+             a.sql  v\n"
+        );
     }
 
     #[test]
