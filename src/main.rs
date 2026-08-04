@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -28,22 +29,64 @@ fn list_sql_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+/// Returns the psql-style variables `:'name'` used in `sql`, sorted and deduplicated.
+///
+/// A name is made of ASCII alphanumeric characters and underscores; anything
+/// else between the quotes is not a variable reference and is skipped.
+fn extract_variables(sql: &str) -> Vec<String> {
+    let mut variables = BTreeSet::new();
+    let mut rest = sql;
+
+    while let Some(start) = rest.find(":'") {
+        rest = &rest[start + 2..];
+
+        let Some(end) = rest.find('\'') else { break };
+        let (name, after) = (&rest[..end], &rest[end + 1..]);
+
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            variables.insert(name.to_string());
+        }
+
+        rest = after;
+    }
+
+    variables.into_iter().collect()
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    match list_sql_files(&cli.sql_dir) {
-        Ok(files) => {
-            for file in files {
-                // `file_name` is always set: only paths with a `.sql` extension are listed.
-                println!("{}", file.file_name().unwrap_or_default().display());
-            }
-            ExitCode::SUCCESS
-        }
+    let files = match list_sql_files(&cli.sql_dir) {
+        Ok(files) => files,
         Err(err) => {
             eprintln!("sqlrunner: {}: {}", cli.sql_dir.display(), err);
-            ExitCode::FAILURE
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut exit_code = ExitCode::SUCCESS;
+
+    for file in files {
+        // `file_name` is always set: only paths with a `.sql` extension are listed.
+        let name = file.file_name().unwrap_or_default().display();
+
+        match std::fs::read_to_string(&file) {
+            Ok(sql) => {
+                let variables = extract_variables(&sql);
+                if variables.is_empty() {
+                    println!("{name}");
+                } else {
+                    println!("{name}: {}", variables.join(", "));
+                }
+            }
+            Err(err) => {
+                eprintln!("sqlrunner: {}: {}", file.display(), err);
+                exit_code = ExitCode::FAILURE;
+            }
         }
     }
+
+    exit_code
 }
 
 #[cfg(test)]
@@ -85,5 +128,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert!(list_sql_files(&dir).is_err());
+    }
+
+    #[test]
+    fn extracts_variables_sorted_and_deduplicated() {
+        let sql = "SELECT * FROM t \
+                   WHERE day >= :'start_date' AND day < :'end_date' \
+                     AND owner = :'owner1' AND creator = :'owner1';";
+
+        assert_eq!(
+            extract_variables(sql),
+            vec!["end_date", "owner1", "start_date"]
+        );
+    }
+
+    #[test]
+    fn ignores_non_variables() {
+        // No variable: a plain literal, a cast, an unquoted psql variable, an
+        // empty name, a name with an invalid character, and an unterminated quote.
+        let sql = "SELECT 'a', x::text, :plain, :'', :'not a name', :'unterminated";
+
+        assert!(extract_variables(sql).is_empty());
+    }
+
+    #[test]
+    fn extracts_no_variable_from_plain_sql() {
+        assert!(extract_variables("SELECT 1;").is_empty());
     }
 }
