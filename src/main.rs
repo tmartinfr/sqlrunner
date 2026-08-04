@@ -34,7 +34,8 @@ fn main() -> ExitCode {
     match list_sql_files(&cli.sql_dir) {
         Ok(files) => {
             for file in files {
-                println!("{}", file.display());
+                // `file_name` is always set: only paths with a `.sql` extension are listed.
+                println!("{}", file.file_name().unwrap_or_default().display());
             }
             ExitCode::SUCCESS
         }

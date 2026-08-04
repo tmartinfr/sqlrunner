@@ -27,12 +27,12 @@ Options:
   -V, --version        Print version
 ```
 
-List the `.sql` files of a directory, one path per line, sorted:
+List the `.sql` files of a directory, one base filename per line, sorted:
 
 ```sh
 $ sqlrunner --sql-dir ./queries
-./queries/orders.sql
-./queries/users.sql
+orders.sql
+users.sql
 ```
 
 Only regular files directly inside the directory are listed: subdirectories are
