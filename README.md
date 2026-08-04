@@ -4,7 +4,7 @@ A handy tool for running SQL queries.
 
 ## Status
 
-Project scaffolding only. The binary currently just prints its version.
+Early stage. `sqlrunner` currently lists the `.sql` files found in a directory.
 
 ## Requirements
 
@@ -16,11 +16,28 @@ Project scaffolding only. The binary currently just prints its version.
 cargo build --release
 ```
 
-## Run
+## Usage
+
+```
+Usage: sqlrunner --sql-dir <DIR>
+
+Options:
+      --sql-dir <DIR>  Directory containing the .sql files
+  -h, --help           Print help
+  -V, --version        Print version
+```
+
+List the `.sql` files of a directory, one path per line, sorted:
 
 ```sh
-cargo run
+$ sqlrunner --sql-dir ./queries
+./queries/orders.sql
+./queries/users.sql
 ```
+
+Only regular files directly inside the directory are listed: subdirectories are
+not traversed, and files with another extension are ignored. An unreadable or
+missing directory is reported on stderr and exits with status 1.
 
 ## Test
 
