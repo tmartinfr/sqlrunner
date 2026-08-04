@@ -4,8 +4,9 @@ A handy tool for running SQL queries.
 
 ## Status
 
-Early stage. `sqlrunner` currently lists the `.sql` files found in a directory,
-along with the psql-style variables they use.
+Early stage. `sqlrunner` currently lists the `.sql` files found in a directory
+along with the psql-style variables they use, and prints the psql command line
+running one of them. It does not run anything itself yet.
 
 ## Requirements
 
@@ -20,13 +21,22 @@ cargo build --release
 ## Usage
 
 ```
-Usage: sqlrunner --sql-dir <DIR>
+Usage: sqlrunner --sql-dir <DIR> [COMMAND]
+
+Commands:
+  list  List the .sql files and the variables they use (default)
+  run   Print the psql command line running a .sql file
+  help  Print this message or the help of the given subcommand(s)
 
 Options:
       --sql-dir <DIR>  Directory containing the .sql files
   -h, --help           Print help
   -V, --version        Print version
 ```
+
+`--sql-dir` is a top-level option and comes before the subcommand.
+
+### list
 
 List the `.sql` files of a directory as a two-column table, sorted by base
 filename, with the psql-style variables each file uses:
@@ -42,6 +52,36 @@ users.sql   user_id
 Only regular files directly inside the directory are listed: subdirectories are
 not traversed, and files with another extension are ignored. An unreadable or
 missing directory is reported on stderr and exits with status 1.
+
+This is the default command: `sqlrunner --sql-dir ./queries` and
+`sqlrunner --sql-dir ./queries list` are equivalent.
+
+### run
+
+Print, without running it, the psql command line that runs one file with its
+variables set from `NAME=VALUE` arguments:
+
+```sh
+$ sqlrunner --sql-dir ./queries run orders.sql status='in progress' \
+    start_date=2026-01-01 end_date=2026-02-01
+psql -v end_date=2026-02-01 -v start_date=2026-01-01 -v 'status=in progress' -f ./queries/orders.sql
+```
+
+The file is named as `list` shows it, and must be one of the listed files: a
+path is not accepted. Each variable the file uses must be assigned exactly once,
+and only those it uses may be assigned. Everything after the first `=` is the
+value, so it may itself contain `=` or be empty.
+
+Values are quoted for a POSIX shell, so the output can be evaluated as is. The
+resulting `psql` call takes its connection settings from the environment
+(`PGHOST`, `PGDATABASE`, ...) as usual.
+
+A bad invocation is reported on stderr and exits with status 1:
+
+```sh
+$ sqlrunner --sql-dir ./queries run orders.sql start_date=2026-01-01
+sqlrunner: orders.sql: unset variables: end_date, status
+```
 
 ### Variables
 

@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// A handy tool for running SQL queries.
 #[derive(Parser)]
@@ -12,6 +12,25 @@ struct Cli {
     /// Directory containing the .sql files
     #[arg(long, value_name = "DIR")]
     sql_dir: PathBuf,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// List the .sql files and the variables they use (default)
+    List,
+
+    /// Print the psql command line running a .sql file
+    Run {
+        /// File to run, as named by `list`
+        file: String,
+
+        /// Value of a variable used by the file
+        #[arg(value_name = "NAME=VALUE")]
+        variables: Vec<String>,
+    },
 }
 
 /// Returns the `.sql` files directly contained in `dir`, sorted by path.
@@ -188,13 +207,86 @@ fn format_table(headers: (&str, &str), rows: &[(String, String)]) -> String {
     table
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
+/// Splits a `name=value` argument, the value being allowed to contain `=`.
+fn parse_assignment(argument: &str) -> Result<(String, String), String> {
+    match argument.split_once('=') {
+        Some((name, _)) if name.is_empty() => {
+            Err(format!("{argument}: missing variable name"))
+        }
+        Some((name, value)) => Ok((name.to_string(), value.to_string())),
+        None => Err(format!("{argument}: expected NAME=VALUE")),
+    }
+}
 
-    let files = match list_sql_files(&cli.sql_dir) {
+/// Quotes `argument` for a POSIX shell, leaving an already safe one untouched.
+fn shell_quote(argument: &str) -> String {
+    let is_safe = |c: char| c.is_ascii_alphanumeric() || "-_./=:,+@".contains(c);
+
+    if !argument.is_empty() && argument.chars().all(is_safe) {
+        argument.to_string()
+    } else {
+        format!("'{}'", argument.replace('\'', r"'\''"))
+    }
+}
+
+/// Renders the psql command line running `file` with `variables` set.
+fn format_psql_command(file: &Path, variables: &BTreeMap<String, String>) -> String {
+    let mut command = String::from("psql");
+
+    for (name, value) in variables {
+        command.push_str(&format!(" -v {}", shell_quote(&format!("{name}={value}"))));
+    }
+
+    command.push_str(&format!(" -f {}", shell_quote(&file.to_string_lossy())));
+    command
+}
+
+/// Returns the psql command line running the `file` of `dir` with `assignments`.
+///
+/// The file must be one of those listed, and the assignments must cover exactly
+/// the variables it uses.
+fn run(dir: &Path, file: &str, assignments: &[String]) -> Result<String, String> {
+    let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+
+    let path = files
+        .iter()
+        .find(|path| path.file_name().is_some_and(|name| name == file))
+        .ok_or_else(|| format!("{file}: no such .sql file in {}", dir.display()))?;
+
+    let sql = std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let used: BTreeSet<String> = extract_variables(&sql).into_iter().collect();
+    let mut variables = BTreeMap::new();
+
+    for assignment in assignments {
+        let (name, value) = parse_assignment(assignment)?;
+
+        if !used.contains(&name) {
+            return Err(format!("{file}: unused variable: {name}"));
+        }
+        if variables.insert(name.clone(), value).is_some() {
+            return Err(format!("{file}: variable set twice: {name}"));
+        }
+    }
+
+    let missing: Vec<&str> = used
+        .iter()
+        .filter(|name| !variables.contains_key(*name))
+        .map(String::as_str)
+        .collect();
+
+    if !missing.is_empty() {
+        return Err(format!("{file}: unset variables: {}", missing.join(", ")));
+    }
+
+    Ok(format_psql_command(path, &variables))
+}
+
+/// Prints the `.sql` files of `dir` and the variables they use.
+fn list(dir: &Path) -> ExitCode {
+    let files = match list_sql_files(dir) {
         Ok(files) => files,
         Err(err) => {
-            eprintln!("sqlrunner: {}: {}", cli.sql_dir.display(), err);
+            eprintln!("sqlrunner: {}: {}", dir.display(), err);
             return ExitCode::FAILURE;
         }
     };
@@ -221,6 +313,24 @@ fn main() -> ExitCode {
     }
 
     exit_code
+}
+
+fn main() -> ExitCode {
+    let cli = Cli::parse();
+
+    match cli.command {
+        None | Some(Command::List) => list(&cli.sql_dir),
+        Some(Command::Run { file, variables }) => match run(&cli.sql_dir, &file, &variables) {
+            Ok(command) => {
+                println!("{command}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("sqlrunner: {err}");
+                ExitCode::FAILURE
+            }
+        },
+    }
 }
 
 #[cfg(test)]
@@ -339,6 +449,88 @@ mod tests {
             "FILE   VARIABLES\n\
              a.sql  v\n"
         );
+    }
+
+    #[test]
+    fn parses_assignments() {
+        assert_eq!(
+            parse_assignment("day=2026-08-04").unwrap(),
+            ("day".to_string(), "2026-08-04".to_string())
+        );
+        // The value keeps everything after the first `=`, and may be empty.
+        assert_eq!(
+            parse_assignment("filter=a=b").unwrap(),
+            ("filter".to_string(), "a=b".to_string())
+        );
+        assert_eq!(
+            parse_assignment("empty=").unwrap(),
+            ("empty".to_string(), String::new())
+        );
+        assert!(parse_assignment("day").is_err());
+        assert!(parse_assignment("=value").is_err());
+    }
+
+    #[test]
+    fn quotes_only_unsafe_arguments() {
+        assert_eq!(shell_quote("day=2026-08-04"), "day=2026-08-04");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("name=a b"), "'name=a b'");
+        assert_eq!(shell_quote("name=it's"), r"'name=it'\''s'");
+    }
+
+    #[test]
+    fn runs_a_file_with_its_variables_set() {
+        let dir = temp_dir("runs-a-file-with-its-variables-set");
+        let sql = "SELECT * FROM t WHERE day >= :'start' AND owner = :'owner';";
+        std::fs::write(dir.join("orders.sql"), sql).unwrap();
+
+        let command = run(
+            &dir,
+            "orders.sql",
+            &["owner=a's shop".to_string(), "start=2026-08-04".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            command,
+            format!(
+                r"psql -v 'owner=a'\''s shop' -v start=2026-08-04 -f {}",
+                dir.join("orders.sql").display()
+            )
+        );
+    }
+
+    #[test]
+    fn runs_a_file_without_variable() {
+        let dir = temp_dir("runs-a-file-without-variable");
+        std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
+
+        assert_eq!(
+            run(&dir, "stats.sql", &[]).unwrap(),
+            format!("psql -f {}", dir.join("stats.sql").display())
+        );
+    }
+
+    #[test]
+    fn running_rejects_an_invalid_invocation() {
+        let dir = temp_dir("running-rejects-an-invalid-invocation");
+        std::fs::write(dir.join("orders.sql"), "SELECT :'start';").unwrap();
+
+        // An unknown file, an unset variable, an unused one, and a duplicate.
+        assert!(run(&dir, "missing.sql", &[]).is_err());
+        assert!(run(&dir, "orders.sql", &[]).is_err());
+        assert!(run(&dir, "orders.sql", &["start=1".into(), "other=2".into()]).is_err());
+        assert!(run(&dir, "orders.sql", &["start=1".into(), "start=2".into()]).is_err());
+    }
+
+    #[test]
+    fn running_ignores_a_file_outside_the_directory() {
+        let dir = temp_dir("running-ignores-a-file-outside-the-directory");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/orders.sql"), "SELECT 1;").unwrap();
+
+        assert!(run(&dir, "sub/orders.sql", &[]).is_err());
+        assert!(run(&dir, "../orders.sql", &[]).is_err());
     }
 
     #[test]
