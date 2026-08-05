@@ -3,11 +3,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 /// A handy tool for running SQL queries.
 ///
-/// Each top-level option can also be set through the environment variable
+/// Without a file, the .sql files of the directory and the variables they use
+/// are listed. Each option can also be set through the environment variable
 /// named after it, the command line taking precedence.
 #[derive(Parser)]
 #[command(version, about)]
@@ -21,24 +22,12 @@ struct Cli {
     #[arg(long, value_name = "DSN", env = "SQLRUNNER_DSN", hide_env_values = true)]
     dsn: Option<String>,
 
-    #[command(subcommand)]
-    command: Option<Command>,
-}
+    /// File to run with psql, as listed when left out
+    file: Option<String>,
 
-#[derive(Subcommand)]
-enum Command {
-    /// List the .sql files and the variables they use (default)
-    List,
-
-    /// Run a .sql file with psql
-    Run {
-        /// File to run, as named by `list`
-        file: String,
-
-        /// Value of a variable used by the file
-        #[arg(value_name = "NAME=VALUE")]
-        variables: Vec<String>,
-    },
+    /// Value of a variable used by the file
+    #[arg(value_name = "NAME=VALUE")]
+    variables: Vec<String>,
 }
 
 /// Returns the `.sql` files directly contained in `dir`, sorted by path.
@@ -395,27 +384,26 @@ fn list(dir: &Path) -> ExitCode {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    match cli.command {
-        None | Some(Command::List) => list(&cli.sql_dir),
-        Some(Command::Run { file, variables }) => {
-            let command = match run(&cli.sql_dir, cli.dsn.as_deref(), &file, &variables) {
-                Ok(command) => command,
-                Err(err) => {
-                    eprintln!("sqlrunner: {err}");
-                    return ExitCode::FAILURE;
-                }
-            };
+    let Some(file) = cli.file else {
+        return list(&cli.sql_dir);
+    };
 
-            println!("{}", colorize(&format_command(&command)));
-            println!();
+    let command = match run(&cli.sql_dir, cli.dsn.as_deref(), &file, &cli.variables) {
+        Ok(command) => command,
+        Err(err) => {
+            eprintln!("sqlrunner: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-            match execute(&command) {
-                Ok(code) => code,
-                Err(err) => {
-                    eprintln!("sqlrunner: {err}");
-                    ExitCode::FAILURE
-                }
-            }
+    println!("{}", colorize(&format_command(&command)));
+    println!();
+
+    match execute(&command) {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("sqlrunner: {err}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -705,14 +693,15 @@ mod tests {
     }
 
     #[test]
-    fn top_level_options_read_their_environment_variable() {
+    fn options_read_their_environment_variable() {
         use clap::CommandFactory;
 
         let command = Cli::command();
         let variables: Vec<(&str, Option<&str>)> = command
             .get_arguments()
+            .filter(|arg| !matches!(arg.get_id().as_str(), "help" | "version"))
+            .filter(|arg| arg.get_long().is_some())
             .map(|arg| (arg.get_id().as_str(), arg.get_env().and_then(|env| env.to_str())))
-            .filter(|(id, _)| *id != "help" && *id != "version")
             .collect();
 
         assert_eq!(

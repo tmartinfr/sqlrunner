@@ -10,3 +10,4 @@ Allow to set top level options as environment variables named SQLRUNNER_OPTIONNA
 Add a delimiter after displaying the psql command, then actually run it and display the output
 Split the command line display in multiple lines, one line per option with a 4-spaces indentation. Display it in purple color. Replace the delimiter with a blank line.
 Add README instructions on how to install
+Remove the run subcommand, the SQL file can be directly passed as first argument

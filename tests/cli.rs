@@ -65,7 +65,7 @@ fn running_prints_the_command_line_then_runs_it() {
     let dir = queries_dir("runs-psql");
 
     let output = sqlrunner(
-        &["run", "stats.sql", "day=2026-08-05"],
+        &["stats.sql", "day=2026-08-05"],
         &[
             ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
             ("SQLRUNNER_DSN", UNREACHABLE_DSN),
@@ -102,7 +102,6 @@ fn the_command_line_wins_over_the_environment() {
             dir.to_str().unwrap(),
             "--dsn",
             UNREACHABLE_DSN,
-            "run",
             "stats.sql",
             "day=2026-08-05",
         ],
@@ -126,7 +125,7 @@ fn an_invalid_invocation_runs_nothing() {
 
     // The `day` variable of the file is left unset.
     let output = sqlrunner(
-        &["run", "stats.sql"],
+        &["stats.sql"],
         &[("SQLRUNNER_SQL_DIR", dir.to_str().unwrap())],
     );
     let (stdout, stderr) = streams(&output);

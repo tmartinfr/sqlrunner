@@ -58,25 +58,25 @@ The binary is then `./target/release/sqlrunner`.
 ## Usage
 
 ```
-Usage: sqlrunner [OPTIONS] --sql-dir <DIR> [COMMAND]
+Usage: sqlrunner [OPTIONS] --sql-dir <DIR> [FILE] [NAME=VALUE]...
 
-Commands:
-  list  List the .sql files and the variables they use (default)
-  run   Run a .sql file with psql
-  help  Print this message or the help of the given subcommand(s)
+Arguments:
+  [FILE]           File to run with psql, as listed when left out
+  [NAME=VALUE]...  Value of a variable used by the file
 
 Options:
       --sql-dir <DIR>  Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
       --dsn <DSN>      Connection string psql must connect with [env: SQLRUNNER_DSN]
-  -h, --help           Print help
+  -h, --help           Print help (see more with '--help')
   -V, --version        Print version
 ```
 
-`--sql-dir` and `--dsn` are top-level options and come before the subcommand.
+There is no subcommand: the file to run is the first argument, and leaving it
+out lists the files instead.
 
 ### Environment variables
 
-Every top-level option can also be set through an environment variable named
+Every option can also be set through an environment variable named
 `SQLRUNNER_` followed by the option name in upper case, with `-` turned into
 `_`:
 
@@ -95,7 +95,7 @@ FILE        VARIABLES
 orders.sql  end_date, start_date, status
 stats.sql
 users.sql   user_id
-$ sqlrunner --dsn 'host=localhost dbname=dev' run users.sql user_id=42
+$ sqlrunner --dsn 'host=localhost dbname=dev' users.sql user_id=42
 psql \
     -d 'host=localhost dbname=dev' \
     -v user_id=42 \
@@ -108,10 +108,10 @@ psql \
 error. The value of `SQLRUNNER_DSN` is kept out of `--help`, as a connection
 string may embed a password.
 
-### list
+### Listing the files
 
-List the `.sql` files of a directory as a two-column table, sorted by base
-filename, with the psql-style variables each file uses:
+Without a file argument, list the `.sql` files of a directory as a two-column
+table, sorted by base filename, with the psql-style variables each file uses:
 
 ```sh
 $ sqlrunner --sql-dir ./queries
@@ -125,17 +125,14 @@ Only regular files directly inside the directory are listed: subdirectories are
 not traversed, and files with another extension are ignored. An unreadable or
 missing directory is reported on stderr and exits with status 1.
 
-This is the default command: `sqlrunner --sql-dir ./queries` and
-`sqlrunner --sql-dir ./queries list` are equivalent.
+### Running a file
 
-### run
-
-Run one file with psql, its variables set from `NAME=VALUE` arguments. The
-command line is printed first, one option per line, then a blank line, then the
-output of psql itself:
+Pass a file as the first argument to run it with psql, its variables set from
+the `NAME=VALUE` arguments that follow. The command line is printed first, one
+option per line, then a blank line, then the output of psql itself:
 
 ```sh
-$ sqlrunner --sql-dir ./queries run orders.sql status='in progress' \
+$ sqlrunner --sql-dir ./queries orders.sql status='in progress' \
     start_date=2026-01-01 end_date=2026-02-01
 psql \
     -v end_date=2026-02-01 \
@@ -153,10 +150,10 @@ The command line is displayed in purple, so it stands out from the output of
 psql. The escapes are left out when the standard output is not a terminal, so a
 redirected or piped run stays plain text.
 
-The file is named as `list` shows it, and must be one of the listed files: a
-path is not accepted. Each variable the file uses must be assigned exactly once,
-and only those it uses may be assigned. Everything after the first `=` is the
-value, so it may itself contain `=` or be empty.
+The file is named as the listing shows it, and must be one of the listed files:
+a path is not accepted. Each variable the file uses must be assigned exactly
+once, and only those it uses may be assigned. Everything after the first `=` is
+the value, so it may itself contain `=` or be empty.
 
 psql is looked up in the `PATH` and inherits the standard streams, so its output
 and any prompt it makes reach the terminal unchanged. The printed command line is
@@ -169,7 +166,7 @@ not be run at all is reported on stderr and exits with status 1, without psql
 being started:
 
 ```sh
-$ sqlrunner --sql-dir ./queries run orders.sql start_date=2026-01-01
+$ sqlrunner --sql-dir ./queries orders.sql start_date=2026-01-01
 sqlrunner: orders.sql: unset variables: end_date, status
 ```
 
@@ -178,7 +175,7 @@ are passed through untouched, a URI:
 
 ```sh
 $ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
-    run users.sql user_id=42
+    users.sql user_id=42
 psql \
     -d postgresql://me@db.example.com/prod \
     -v user_id=42 \
@@ -191,7 +188,7 @@ or a keyword/value string:
 
 ```sh
 $ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
-    run users.sql user_id=42
+    users.sql user_id=42
 psql \
     -d 'host=localhost dbname=prod' \
     -v user_id=42 \
@@ -201,8 +198,8 @@ psql \
 ```
 
 Without `--dsn`, no `-d` is emitted and psql takes its connection settings from
-the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused by
-`list`, which reads no database.
+the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused when
+listing, which reads no database.
 
 ### Variables
 
