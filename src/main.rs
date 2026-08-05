@@ -5,10 +5,6 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-/// Separates the printed psql command line from the output of psql itself.
-const DELIMITER: &str =
-    "--------------------------------------------------------------------------------";
-
 /// A handy tool for running SQL queries.
 ///
 /// Each top-level option can also be set through the environment variable
@@ -267,13 +263,34 @@ fn psql_command(
     command
 }
 
-/// Renders `command` as a command line a POSIX shell would run identically.
+/// Renders `command` as a command line a POSIX shell would run identically,
+/// the program on the first line then one option per continuation line.
+///
+/// An option is a flag and the value that follows it, as psql takes them.
 fn format_command(command: &[String]) -> String {
-    command
-        .iter()
-        .map(|argument| shell_quote(argument))
-        .collect::<Vec<String>>()
-        .join(" ")
+    let mut lines = vec![shell_quote(&command[0])];
+
+    for option in command[1..].chunks(2) {
+        let arguments: Vec<String> = option.iter().map(|argument| shell_quote(argument)).collect();
+        lines.push(format!("    {}", arguments.join(" ")));
+    }
+
+    lines.join(" \\\n")
+}
+
+/// Wraps `text` in the escapes displaying it in purple.
+fn purple(text: &str) -> String {
+    format!("\x1b[35m{text}\x1b[0m")
+}
+
+/// Displays `text` in purple, plain when the standard output is not a terminal
+/// able to interpret the escapes.
+fn colorize(text: &str) -> String {
+    if io::IsTerminal::is_terminal(&io::stdout()) {
+        purple(text)
+    } else {
+        text.to_string()
+    }
 }
 
 /// Runs `command`, letting it inherit the standard streams, and returns its
@@ -389,8 +406,8 @@ fn main() -> ExitCode {
                 }
             };
 
-            println!("{}", format_command(&command));
-            println!("{DELIMITER}");
+            println!("{}", colorize(&format_command(&command)));
+            println!();
 
             match execute(&command) {
                 Ok(code) => code,
@@ -579,7 +596,10 @@ mod tests {
         assert_eq!(
             format_command(&command),
             format!(
-                r"psql -v 'owner=a'\''s shop' -v start=2026-08-04 -f {}",
+                "psql \\\n    \
+                     -v 'owner=a'\\''s shop' \\\n    \
+                     -v start=2026-08-04 \\\n    \
+                     -f {}",
                 dir.join("orders.sql").display()
             )
         );
@@ -597,7 +617,10 @@ mod tests {
         assert_eq!(
             format_command(&command),
             format!(
-                "psql -d '{dsn}' -v day=2026-08-04 -f {}",
+                "psql \\\n    \
+                     -d '{dsn}' \\\n    \
+                     -v day=2026-08-04 \\\n    \
+                     -f {}",
                 dir.join("stats.sql").display()
             )
         );
@@ -613,7 +636,9 @@ mod tests {
         assert_eq!(
             format_command(&command),
             format!(
-                "psql -d 'host=localhost dbname=db' -f {}",
+                "psql \\\n    \
+                     -d 'host=localhost dbname=db' \\\n    \
+                     -f {}",
                 dir.join("stats.sql").display()
             )
         );
@@ -626,7 +651,7 @@ mod tests {
 
         assert_eq!(
             format_command(&run(&dir, None, "stats.sql", &[]).unwrap()),
-            format!("psql -f {}", dir.join("stats.sql").display())
+            format!("psql \\\n    -f {}", dir.join("stats.sql").display())
         );
     }
 
@@ -650,6 +675,13 @@ mod tests {
 
         assert!(run(&dir, None, "sub/orders.sql", &[]).is_err());
         assert!(run(&dir, None, "../orders.sql", &[]).is_err());
+    }
+
+    #[test]
+    fn colors_in_purple() {
+        assert_eq!(purple("psql \\\n    -f a.sql"), "\x1b[35mpsql \\\n    -f a.sql\x1b[0m");
+        // The tests capture the standard output, so no escape is emitted.
+        assert_eq!(colorize("psql"), "psql");
     }
 
     #[test]

@@ -60,8 +60,11 @@ orders.sql  end_date, start_date, status
 stats.sql
 users.sql   user_id
 $ sqlrunner --dsn 'host=localhost dbname=dev' run users.sql user_id=42
-psql -d 'host=localhost dbname=dev' -v user_id=42 -f ./queries/users.sql
---------------------------------------------------------------------------------
+psql \
+    -d 'host=localhost dbname=dev' \
+    -v user_id=42 \
+    -f ./queries/users.sql
+
 ...
 ```
 
@@ -92,19 +95,27 @@ This is the default command: `sqlrunner --sql-dir ./queries` and
 ### run
 
 Run one file with psql, its variables set from `NAME=VALUE` arguments. The
-command line is printed first, then a delimiter line, then the output of psql
-itself:
+command line is printed first, one option per line, then a blank line, then the
+output of psql itself:
 
 ```sh
 $ sqlrunner --sql-dir ./queries run orders.sql status='in progress' \
     start_date=2026-01-01 end_date=2026-02-01
-psql -v end_date=2026-02-01 -v start_date=2026-01-01 -v 'status=in progress' -f ./queries/orders.sql
---------------------------------------------------------------------------------
+psql \
+    -v end_date=2026-02-01 \
+    -v start_date=2026-01-01 \
+    -v 'status=in progress' \
+    -f ./queries/orders.sql
+
  id | total
 ----+-------
   7 | 42.00
 (1 row)
 ```
+
+The command line is displayed in purple, so it stands out from the output of
+psql. The escapes are left out when the standard output is not a terminal, so a
+redirected or piped run stays plain text.
 
 The file is named as `list` shows it, and must be one of the listed files: a
 path is not accepted. Each variable the file uses must be assigned exactly once,
@@ -113,8 +124,8 @@ value, so it may itself contain `=` or be empty.
 
 psql is looked up in the `PATH` and inherits the standard streams, so its output
 and any prompt it makes reach the terminal unchanged. The printed command line is
-quoted for a POSIX shell and can be pasted as is; the arguments themselves are
-passed to psql directly, without a shell in between.
+quoted for a POSIX shell and continued with `\`, so it can be pasted as is; the
+arguments themselves are passed to psql directly, without a shell in between.
 
 `sqlrunner` exits with the exit status of psql: 0 on success, 1 on a fatal psql
 error, 2 when the connection fails, 3 on an error in the SQL. A file that could
@@ -132,8 +143,11 @@ are passed through untouched, a URI:
 ```sh
 $ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
     run users.sql user_id=42
-psql -d postgresql://me@db.example.com/prod -v user_id=42 -f ./queries/users.sql
---------------------------------------------------------------------------------
+psql \
+    -d postgresql://me@db.example.com/prod \
+    -v user_id=42 \
+    -f ./queries/users.sql
+
 ...
 ```
 
@@ -142,8 +156,11 @@ or a keyword/value string:
 ```sh
 $ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
     run users.sql user_id=42
-psql -d 'host=localhost dbname=prod' -v user_id=42 -f ./queries/users.sql
---------------------------------------------------------------------------------
+psql \
+    -d 'host=localhost dbname=prod' \
+    -v user_id=42 \
+    -f ./queries/users.sql
+
 ...
 ```
 
