@@ -5,8 +5,8 @@ A handy tool for running SQL queries.
 ## Status
 
 Early stage. `sqlrunner` currently lists the `.sql` files found in a directory
-along with the psql-style variables they use, and runs one of them with psql
-after printing the command line it uses.
+along with the psql-style variables they use and their description, and runs one
+of them with psql after printing the command line it uses.
 
 ## Requirements
 
@@ -91,10 +91,10 @@ The command line takes precedence, so a variable acts as a default:
 $ export SQLRUNNER_SQL_DIR=./queries
 $ export SQLRUNNER_DSN='postgresql://me@db.example.com/prod'
 $ sqlrunner
-FILE        VARIABLES
-orders.sql  end_date, start_date, status
+FILE        VARIABLES                     DESCRIPTION
+orders.sql  end_date, start_date, status  Orders of a period, by status
 stats.sql
-users.sql   user_id
+users.sql   user_id                       Details of one user
 $ sqlrunner --dsn 'host=localhost dbname=dev' users.sql user_id=42
 psql \
     -d 'host=localhost dbname=dev' \
@@ -110,15 +110,16 @@ string may embed a password.
 
 ### Listing the files
 
-Without a file argument, list the `.sql` files of a directory as a two-column
-table, sorted by base filename, with the psql-style variables each file uses:
+Without a file argument, list the `.sql` files of a directory as a three-column
+table, sorted by base filename, with the psql-style variables each file uses and
+its description:
 
 ```sh
 $ sqlrunner --sql-dir ./queries
-FILE        VARIABLES
-orders.sql  end_date, start_date, status
+FILE        VARIABLES                     DESCRIPTION
+orders.sql  end_date, start_date, status  Orders of a period, by status
 stats.sql
-users.sql   user_id
+users.sql   user_id                       Details of one user
 ```
 
 Only regular files directly inside the directory are listed: subdirectories are
@@ -211,9 +212,8 @@ SELECT * FROM orders WHERE created_at >= :'start_date';
 ```
 
 Names are made of ASCII letters, digits and underscores. They are reported
-sorted and deduplicated; a file with no variable has an empty second column.
-Other
-psql forms (`:name`, `:"name"`) are not detected.
+sorted and deduplicated; a file with no variable has an empty `VARIABLES` cell.
+Other psql forms (`:name`, `:"name"`) are not detected.
 
 Occurrences that psql would not interpolate are ignored:
 
@@ -224,6 +224,21 @@ Occurrences that psql would not interpolate are ignored:
 
 A file that cannot be read is reported on stderr, the other files are still
 listed, and the exit status is 1.
+
+### Descriptions
+
+A description is optional: it is the text of a `--` comment making up the first
+line of a file, and says in a few words what the file does.
+
+```sql
+-- Orders of a period, by status
+SELECT * FROM orders WHERE created_at >= :'start_date';
+```
+
+The `--` marker and the spaces around the text are left out. A file whose first
+line is not such a comment, or whose comment holds nothing but spaces, has an
+empty `DESCRIPTION` cell. Only the first line is looked at: a comment further
+down the file, or one trailing a statement, is not a description.
 
 ## Test
 

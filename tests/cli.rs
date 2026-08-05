@@ -9,12 +9,13 @@ use std::process::{Command, Output};
 /// A DSN no server answers, so that psql fails without needing one.
 const UNREACHABLE_DSN: &str = "host=127.0.0.1 port=1 dbname=nowhere";
 
-/// Creates a directory holding a single `stats.sql` file using one variable.
+/// Creates a directory holding a single `stats.sql` file which uses one variable
+/// and carries a description on its first line.
 fn queries_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sqlrunner-cli-test-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("stats.sql"), "SELECT :'day';").unwrap();
+    std::fs::write(dir.join("stats.sql"), "-- Daily counters\nSELECT :'day';").unwrap();
     dir
 }
 
@@ -48,7 +49,10 @@ fn sql_dir_comes_from_the_environment() {
     let (stdout, _) = streams(&output);
 
     assert!(output.status.success());
-    assert_eq!(stdout, "FILE       VARIABLES\nstats.sql  day\n");
+    assert_eq!(
+        stdout,
+        "FILE       VARIABLES  DESCRIPTION\nstats.sql  day        Daily counters\n"
+    );
 }
 
 #[test]

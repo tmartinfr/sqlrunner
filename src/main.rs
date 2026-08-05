@@ -7,9 +7,9 @@ use clap::Parser;
 
 /// A handy tool for running SQL queries.
 ///
-/// Without a file, the .sql files of the directory and the variables they use
-/// are listed. Each option can also be set through the environment variable
-/// named after it, the command line taking precedence.
+/// Without a file, the .sql files of the directory are listed, with the
+/// variables they use and their description. Each option can also be set through
+/// the environment variable named after it, the command line taking precedence.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -96,6 +96,17 @@ fn extract_variables(sql: &str) -> Vec<String> {
     variables.into_iter().collect()
 }
 
+/// Returns the description of `sql`, the text of the `--` comment making up its
+/// first line, or `None` when the file does not start with one.
+///
+/// The description is optional: a first line that is not a comment, or a comment
+/// with nothing but spaces in it, leaves the file without one.
+fn extract_description(sql: &str) -> Option<String> {
+    let comment = sql.lines().next()?.trim().strip_prefix("--")?.trim();
+
+    (!comment.is_empty()).then(|| comment.to_string())
+}
+
 /// Skips the `--` comment starting at `start`, returning the index of its newline.
 fn skip_line_comment(bytes: &[u8], start: usize) -> usize {
     match bytes[start..].iter().position(|&b| b == b'\n') {
@@ -176,28 +187,29 @@ fn skip_dollar_quoted(bytes: &[u8], start: usize) -> usize {
     }
 }
 
-/// Renders `rows` as a two-column table, the first column padded to a common width.
+/// Renders `rows` as a table, each column padded to a common width.
 ///
-/// The header is included, and an empty second column leaves no trailing space.
-fn format_table(headers: (&str, &str), rows: &[(String, String)]) -> String {
-    let width = rows
-        .iter()
-        .map(|(left, _)| left.chars().count())
-        .chain(std::iter::once(headers.0.chars().count()))
-        .max()
-        .unwrap_or(0);
+/// The header is included, and every row must have as many cells as there are
+/// headers. Empty trailing cells leave no trailing space.
+fn format_table(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let header_row: Vec<String> = headers.iter().map(|header| header.to_string()).collect();
+    let lines: Vec<&Vec<String>> = std::iter::once(&header_row).chain(rows).collect();
+
+    let widths: Vec<usize> = (0..headers.len())
+        .map(|column| lines.iter().map(|line| line[column].chars().count()).max().unwrap_or(0))
+        .collect();
 
     let mut table = String::new();
 
-    for (left, right) in std::iter::once((headers.0.to_string(), headers.1.to_string()))
-        .chain(rows.iter().cloned())
-    {
-        if right.is_empty() {
-            table.push_str(&left);
-        } else {
-            let padding = " ".repeat(width - left.chars().count());
-            table.push_str(&format!("{left}{padding}  {right}"));
+    for line in lines {
+        let mut rendered = String::new();
+
+        for (column, cell) in line.iter().enumerate() {
+            let padding = " ".repeat(widths[column] - cell.chars().count() + 2);
+            rendered.push_str(&format!("{cell}{padding}"));
         }
+
+        table.push_str(rendered.trim_end());
         table.push('\n');
     }
 
@@ -365,7 +377,11 @@ fn list(dir: &Path) -> ExitCode {
             Ok(sql) => {
                 // `file_name` is always set: only paths with a `.sql` extension are listed.
                 let name = file.file_name().unwrap_or_default().to_string_lossy();
-                rows.push((name.into_owned(), extract_variables(&sql).join(", ")));
+                rows.push(vec![
+                    name.into_owned(),
+                    extract_variables(&sql).join(", "),
+                    extract_description(&sql).unwrap_or_default(),
+                ]);
             }
             Err(err) => {
                 eprintln!("sqlrunner: {}: {}", file.display(), err);
@@ -375,7 +391,7 @@ fn list(dir: &Path) -> ExitCode {
     }
 
     if !rows.is_empty() {
-        print!("{}", format_table(("FILE", "VARIABLES"), &rows));
+        print!("{}", format_table(&["FILE", "VARIABLES", "DESCRIPTION"], &rows));
     }
 
     exit_code
@@ -501,29 +517,65 @@ mod tests {
     }
 
     #[test]
-    fn formats_a_two_column_table() {
+    fn formats_a_three_column_table() {
         let rows = vec![
-            ("comments.sql".to_string(), "owner, start_date".to_string()),
-            ("stats.sql".to_string(), String::new()),
+            vec![
+                "comments.sql".to_string(),
+                "owner, start_date".to_string(),
+                "Comments of an owner".to_string(),
+            ],
+            // An empty cell is still padded when a cell follows it.
+            vec![
+                "stats.sql".to_string(),
+                String::new(),
+                "Daily counters".to_string(),
+            ],
+            vec!["users.sql".to_string(), "user_id".to_string(), String::new()],
         ];
 
         assert_eq!(
-            format_table(("FILE", "VARIABLES"), &rows),
-            "FILE          VARIABLES\n\
-             comments.sql  owner, start_date\n\
-             stats.sql\n"
+            format_table(&["FILE", "VARIABLES", "DESCRIPTION"], &rows),
+            "FILE          VARIABLES          DESCRIPTION\n\
+             comments.sql  owner, start_date  Comments of an owner\n\
+             stats.sql                        Daily counters\n\
+             users.sql     user_id\n"
         );
     }
 
     #[test]
     fn table_column_is_at_least_as_wide_as_its_header() {
-        let rows = vec![("a.sql".to_string(), "v".to_string())];
+        let rows = vec![vec!["a.sql".to_string(), "v".to_string(), "d".to_string()]];
 
         assert_eq!(
-            format_table(("FILE", "VARIABLES"), &rows),
-            "FILE   VARIABLES\n\
-             a.sql  v\n"
+            format_table(&["FILE", "VARIABLES", "DESCRIPTION"], &rows),
+            "FILE   VARIABLES  DESCRIPTION\n\
+             a.sql  v          d\n"
         );
+    }
+
+    #[test]
+    fn extracts_the_description_of_the_first_line() {
+        assert_eq!(
+            extract_description("-- Orders of a month\nSELECT 1;").as_deref(),
+            Some("Orders of a month")
+        );
+        // The comment marker and the spaces around it are left out.
+        assert_eq!(
+            extract_description("  --\tOrders  \nSELECT 1;").as_deref(),
+            Some("Orders")
+        );
+        // The description is a single line: a later comment is not one.
+        assert_eq!(extract_description("SELECT 1; -- Orders"), None);
+        assert_eq!(extract_description("SELECT 1;\n-- Orders"), None);
+    }
+
+    #[test]
+    fn a_file_may_have_no_description() {
+        assert_eq!(extract_description(""), None);
+        assert_eq!(extract_description("SELECT 1;"), None);
+        // A comment with nothing to read in it.
+        assert_eq!(extract_description("--\nSELECT 1;"), None);
+        assert_eq!(extract_description("--   \nSELECT 1;"), None);
     }
 
     #[test]
