@@ -13,11 +13,47 @@ after printing the command line it uses.
 - Rust (edition 2024, tested with cargo 1.93)
 - psql in the `PATH`, to run a file
 
+## Install
+
+With `cargo install`, straight from the repository:
+
+```sh
+cargo install --git https://github.com/tmartinfr/sqlrunner
+```
+
+or from a local clone:
+
+```sh
+git clone https://github.com/tmartinfr/sqlrunner
+cd sqlrunner
+cargo install --path .
+```
+
+Either way the binary lands in `~/.cargo/bin/sqlrunner`, which must be in the
+`PATH`. Add it if it is not there yet:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Check the result with:
+
+```sh
+sqlrunner --version
+```
+
+Re-run the same command to upgrade, and `cargo uninstall sqlrunner` to remove
+it.
+
 ## Build
+
+To build without installing, from a clone:
 
 ```sh
 cargo build --release
 ```
+
+The binary is then `./target/release/sqlrunner`.
 
 ## Usage
 
