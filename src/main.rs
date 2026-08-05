@@ -5,6 +5,10 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+/// Separates the printed psql command line from the output of psql itself.
+const DELIMITER: &str =
+    "--------------------------------------------------------------------------------";
+
 /// A handy tool for running SQL queries.
 ///
 /// Each top-level option can also be set through the environment variable
@@ -30,7 +34,7 @@ enum Command {
     /// List the .sql files and the variables they use (default)
     List,
 
-    /// Print the psql command line running a .sql file
+    /// Run a .sql file with psql
     Run {
         /// File to run, as named by `list`
         file: String,
@@ -237,29 +241,62 @@ fn shell_quote(argument: &str) -> String {
     }
 }
 
-/// Renders the psql command line running `file` with `variables` set.
+/// Returns the psql command running `file` with `variables` set, as an argument
+/// vector starting with the program name.
 ///
 /// Without a `dsn`, psql takes its connection settings from the environment.
-fn format_psql_command(
+fn psql_command(
     file: &Path,
     dsn: Option<&str>,
     variables: &BTreeMap<String, String>,
-) -> String {
-    let mut command = String::from("psql");
+) -> Vec<String> {
+    let mut command = vec!["psql".to_string()];
 
     if let Some(dsn) = dsn {
-        command.push_str(&format!(" -d {}", shell_quote(dsn)));
+        command.push("-d".to_string());
+        command.push(dsn.to_string());
     }
 
     for (name, value) in variables {
-        command.push_str(&format!(" -v {}", shell_quote(&format!("{name}={value}"))));
+        command.push("-v".to_string());
+        command.push(format!("{name}={value}"));
     }
 
-    command.push_str(&format!(" -f {}", shell_quote(&file.to_string_lossy())));
+    command.push("-f".to_string());
+    command.push(file.to_string_lossy().into_owned());
     command
 }
 
-/// Returns the psql command line running the `file` of `dir` with `assignments`.
+/// Renders `command` as a command line a POSIX shell would run identically.
+fn format_command(command: &[String]) -> String {
+    command
+        .iter()
+        .map(|argument| shell_quote(argument))
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+/// Runs `command`, letting it inherit the standard streams, and returns its
+/// exit status as an exit code.
+///
+/// A status without a code, as when a signal terminates psql, is a failure.
+fn execute(command: &[String]) -> Result<ExitCode, String> {
+    // Our own output must reach the terminal before psql writes to it.
+    io::Write::flush(&mut io::stdout()).map_err(|err| format!("stdout: {err}"))?;
+
+    let status = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .status()
+        .map_err(|err| format!("{}: {err}", command[0]))?;
+
+    match status.code() {
+        Some(0) => Ok(ExitCode::SUCCESS),
+        Some(code) => Ok(ExitCode::from(code as u8)),
+        None => Ok(ExitCode::FAILURE),
+    }
+}
+
+/// Returns the psql command running the `file` of `dir` with `assignments`.
 ///
 /// The file must be one of those listed, and the assignments must cover exactly
 /// the variables it uses.
@@ -268,7 +305,7 @@ fn run(
     dsn: Option<&str>,
     file: &str,
     assignments: &[String],
-) -> Result<String, String> {
+) -> Result<Vec<String>, String> {
     let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
     let path = files
@@ -301,7 +338,7 @@ fn run(
         return Err(format!("{file}: unset variables: {}", missing.join(", ")));
     }
 
-    Ok(format_psql_command(path, dsn, &variables))
+    Ok(psql_command(path, dsn, &variables))
 }
 
 /// Prints the `.sql` files of `dir` and the variables they use.
@@ -344,11 +381,19 @@ fn main() -> ExitCode {
     match cli.command {
         None | Some(Command::List) => list(&cli.sql_dir),
         Some(Command::Run { file, variables }) => {
-            match run(&cli.sql_dir, cli.dsn.as_deref(), &file, &variables) {
-                Ok(command) => {
-                    println!("{command}");
-                    ExitCode::SUCCESS
+            let command = match run(&cli.sql_dir, cli.dsn.as_deref(), &file, &variables) {
+                Ok(command) => command,
+                Err(err) => {
+                    eprintln!("sqlrunner: {err}");
+                    return ExitCode::FAILURE;
                 }
+            };
+
+            println!("{}", format_command(&command));
+            println!("{DELIMITER}");
+
+            match execute(&command) {
+                Ok(code) => code,
                 Err(err) => {
                     eprintln!("sqlrunner: {err}");
                     ExitCode::FAILURE
@@ -517,8 +562,22 @@ mod tests {
         )
         .unwrap();
 
+        // The arguments are passed to psql unquoted, the quoting being only a
+        // matter of rendering the command line.
         assert_eq!(
             command,
+            vec![
+                "psql",
+                "-v",
+                "owner=a's shop",
+                "-v",
+                "start=2026-08-04",
+                "-f",
+                &dir.join("orders.sql").to_string_lossy(),
+            ]
+        );
+        assert_eq!(
+            format_command(&command),
             format!(
                 r"psql -v 'owner=a'\''s shop' -v start=2026-08-04 -f {}",
                 dir.join("orders.sql").display()
@@ -536,7 +595,7 @@ mod tests {
 
         // The `?` of the query string is quoted, as a shell would expand it.
         assert_eq!(
-            command,
+            format_command(&command),
             format!(
                 "psql -d '{dsn}' -v day=2026-08-04 -f {}",
                 dir.join("stats.sql").display()
@@ -552,7 +611,7 @@ mod tests {
         let command = run(&dir, Some("host=localhost dbname=db"), "stats.sql", &[]).unwrap();
 
         assert_eq!(
-            command,
+            format_command(&command),
             format!(
                 "psql -d 'host=localhost dbname=db' -f {}",
                 dir.join("stats.sql").display()
@@ -566,7 +625,7 @@ mod tests {
         std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
 
         assert_eq!(
-            run(&dir, None, "stats.sql", &[]).unwrap(),
+            format_command(&run(&dir, None, "stats.sql", &[]).unwrap()),
             format!("psql -f {}", dir.join("stats.sql").display())
         );
     }
@@ -591,6 +650,26 @@ mod tests {
 
         assert!(run(&dir, None, "sub/orders.sql", &[]).is_err());
         assert!(run(&dir, None, "../orders.sql", &[]).is_err());
+    }
+
+    #[test]
+    fn executing_reports_a_missing_program() {
+        let err = execute(&["sqlrunner-no-such-program".to_string()]).unwrap_err();
+
+        assert!(err.starts_with("sqlrunner-no-such-program: "));
+    }
+
+    #[test]
+    fn executing_returns_the_exit_code_of_the_program() {
+        // `false` is the shortest program with a non-zero, non-signal status.
+        assert_eq!(
+            format!("{:?}", execute(&["false".to_string()]).unwrap()),
+            format!("{:?}", ExitCode::from(1))
+        );
+        assert_eq!(
+            format!("{:?}", execute(&["true".to_string()]).unwrap()),
+            format!("{:?}", ExitCode::SUCCESS)
+        );
     }
 
     #[test]

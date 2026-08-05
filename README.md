@@ -5,12 +5,13 @@ A handy tool for running SQL queries.
 ## Status
 
 Early stage. `sqlrunner` currently lists the `.sql` files found in a directory
-along with the psql-style variables they use, and prints the psql command line
-running one of them. It does not run anything itself yet.
+along with the psql-style variables they use, and runs one of them with psql
+after printing the command line it uses.
 
 ## Requirements
 
 - Rust (edition 2024, tested with cargo 1.93)
+- psql in the `PATH`, to run a file
 
 ## Build
 
@@ -25,7 +26,7 @@ Usage: sqlrunner [OPTIONS] --sql-dir <DIR> [COMMAND]
 
 Commands:
   list  List the .sql files and the variables they use (default)
-  run   Print the psql command line running a .sql file
+  run   Run a .sql file with psql
   help  Print this message or the help of the given subcommand(s)
 
 Options:
@@ -60,6 +61,8 @@ stats.sql
 users.sql   user_id
 $ sqlrunner --dsn 'host=localhost dbname=dev' run users.sql user_id=42
 psql -d 'host=localhost dbname=dev' -v user_id=42 -f ./queries/users.sql
+--------------------------------------------------------------------------------
+...
 ```
 
 `--sql-dir` stays mandatory: setting neither the option nor its variable is an
@@ -88,13 +91,19 @@ This is the default command: `sqlrunner --sql-dir ./queries` and
 
 ### run
 
-Print, without running it, the psql command line that runs one file with its
-variables set from `NAME=VALUE` arguments:
+Run one file with psql, its variables set from `NAME=VALUE` arguments. The
+command line is printed first, then a delimiter line, then the output of psql
+itself:
 
 ```sh
 $ sqlrunner --sql-dir ./queries run orders.sql status='in progress' \
     start_date=2026-01-01 end_date=2026-02-01
 psql -v end_date=2026-02-01 -v start_date=2026-01-01 -v 'status=in progress' -f ./queries/orders.sql
+--------------------------------------------------------------------------------
+ id | total
+----+-------
+  7 | 42.00
+(1 row)
 ```
 
 The file is named as `list` shows it, and must be one of the listed files: a
@@ -102,7 +111,20 @@ path is not accepted. Each variable the file uses must be assigned exactly once,
 and only those it uses may be assigned. Everything after the first `=` is the
 value, so it may itself contain `=` or be empty.
 
-Values are quoted for a POSIX shell, so the output can be evaluated as is.
+psql is looked up in the `PATH` and inherits the standard streams, so its output
+and any prompt it makes reach the terminal unchanged. The printed command line is
+quoted for a POSIX shell and can be pasted as is; the arguments themselves are
+passed to psql directly, without a shell in between.
+
+`sqlrunner` exits with the exit status of psql: 0 on success, 1 on a fatal psql
+error, 2 when the connection fails, 3 on an error in the SQL. A file that could
+not be run at all is reported on stderr and exits with status 1, without psql
+being started:
+
+```sh
+$ sqlrunner --sql-dir ./queries run orders.sql start_date=2026-01-01
+sqlrunner: orders.sql: unset variables: end_date, status
+```
 
 `--dsn` tells psql where to connect, as a `-d` argument. Both forms psql accepts
 are passed through untouched, a URI:
@@ -111,6 +133,8 @@ are passed through untouched, a URI:
 $ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
     run users.sql user_id=42
 psql -d postgresql://me@db.example.com/prod -v user_id=42 -f ./queries/users.sql
+--------------------------------------------------------------------------------
+...
 ```
 
 or a keyword/value string:
@@ -119,18 +143,13 @@ or a keyword/value string:
 $ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
     run users.sql user_id=42
 psql -d 'host=localhost dbname=prod' -v user_id=42 -f ./queries/users.sql
+--------------------------------------------------------------------------------
+...
 ```
 
 Without `--dsn`, no `-d` is emitted and psql takes its connection settings from
 the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused by
 `list`, which reads no database.
-
-A bad invocation is reported on stderr and exits with status 1:
-
-```sh
-$ sqlrunner --sql-dir ./queries run orders.sql start_date=2026-01-01
-sqlrunner: orders.sql: unset variables: end_date, status
-```
 
 ### Variables
 
