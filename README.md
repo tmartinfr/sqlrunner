@@ -29,13 +29,42 @@ Commands:
   help  Print this message or the help of the given subcommand(s)
 
 Options:
-      --sql-dir <DIR>  Directory containing the .sql files
-      --dsn <DSN>      Connection string psql must connect with
+      --sql-dir <DIR>  Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
+      --dsn <DSN>      Connection string psql must connect with [env: SQLRUNNER_DSN]
   -h, --help           Print help
   -V, --version        Print version
 ```
 
 `--sql-dir` and `--dsn` are top-level options and come before the subcommand.
+
+### Environment variables
+
+Every top-level option can also be set through an environment variable named
+`SQLRUNNER_` followed by the option name in upper case, with `-` turned into
+`_`:
+
+| Option      | Variable            |
+| ----------- | ------------------- |
+| `--sql-dir` | `SQLRUNNER_SQL_DIR` |
+| `--dsn`     | `SQLRUNNER_DSN`     |
+
+The command line takes precedence, so a variable acts as a default:
+
+```sh
+$ export SQLRUNNER_SQL_DIR=./queries
+$ export SQLRUNNER_DSN='postgresql://me@db.example.com/prod'
+$ sqlrunner
+FILE        VARIABLES
+orders.sql  end_date, start_date, status
+stats.sql
+users.sql   user_id
+$ sqlrunner --dsn 'host=localhost dbname=dev' run users.sql user_id=42
+psql -d 'host=localhost dbname=dev' -v user_id=42 -f ./queries/users.sql
+```
+
+`--sql-dir` stays mandatory: setting neither the option nor its variable is an
+error. The value of `SQLRUNNER_DSN` is kept out of `--help`, as a connection
+string may embed a password.
 
 ### list
 

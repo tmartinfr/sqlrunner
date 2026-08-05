@@ -6,15 +6,19 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 /// A handy tool for running SQL queries.
+///
+/// Each top-level option can also be set through the environment variable
+/// named after it, the command line taking precedence.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
     /// Directory containing the .sql files
-    #[arg(long, value_name = "DIR")]
+    #[arg(long, value_name = "DIR", env = "SQLRUNNER_SQL_DIR")]
     sql_dir: PathBuf,
 
     /// Connection string psql must connect with
-    #[arg(long, value_name = "DSN")]
+    // The value is hidden from the help, as a DSN may embed a password.
+    #[arg(long, value_name = "DSN", env = "SQLRUNNER_DSN", hide_env_values = true)]
     dsn: Option<String>,
 
     #[command(subcommand)]
@@ -587,6 +591,26 @@ mod tests {
 
         assert!(run(&dir, None, "sub/orders.sql", &[]).is_err());
         assert!(run(&dir, None, "../orders.sql", &[]).is_err());
+    }
+
+    #[test]
+    fn top_level_options_read_their_environment_variable() {
+        use clap::CommandFactory;
+
+        let command = Cli::command();
+        let variables: Vec<(&str, Option<&str>)> = command
+            .get_arguments()
+            .map(|arg| (arg.get_id().as_str(), arg.get_env().and_then(|env| env.to_str())))
+            .filter(|(id, _)| *id != "help" && *id != "version")
+            .collect();
+
+        assert_eq!(
+            variables,
+            vec![
+                ("sql_dir", Some("SQLRUNNER_SQL_DIR")),
+                ("dsn", Some("SQLRUNNER_DSN")),
+            ]
+        );
     }
 
     #[test]
