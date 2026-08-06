@@ -22,6 +22,10 @@ struct Cli {
     #[arg(long, value_name = "DSN", env = "SQLRUNNER_DSN", hide_env_values = true)]
     dsn: Option<String>,
 
+    /// Ask for the variables left unset instead of failing
+    #[arg(short, long, env = "SQLRUNNER_INTERACTIVE")]
+    interactive: bool,
+
     /// File to run with psql, as listed when left out
     file: Option<String>,
 
@@ -314,15 +318,45 @@ fn execute(command: &[String]) -> Result<ExitCode, String> {
     }
 }
 
+/// Asks on `output` for a value for each name of `missing`, reading one line
+/// per name from `input`.
+///
+/// The value is the line as typed, without its newline, and may be empty. An
+/// input ending before a value is given is an error.
+fn ask_variables(
+    missing: &[&str],
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<Vec<(String, String)>, String> {
+    let mut variables = Vec::new();
+
+    for name in missing {
+        write!(output, "{name}: ").map_err(|err| format!("{name}: {err}"))?;
+        output.flush().map_err(|err| format!("{name}: {err}"))?;
+
+        let mut line = String::new();
+        if input.read_line(&mut line).map_err(|err| format!("{name}: {err}"))? == 0 {
+            return Err(format!("{name}: no value given"));
+        }
+
+        let value = line.trim_end_matches('\n').trim_end_matches('\r');
+        variables.push((name.to_string(), value.to_string()));
+    }
+
+    Ok(variables)
+}
+
 /// Returns the psql command running the `file` of `dir` with `assignments`.
 ///
 /// The file must be one of those listed, and the assignments must cover exactly
-/// the variables it uses.
+/// the variables it uses, unless `interactive` is set: the variables left unset
+/// are then asked for on the terminal.
 fn run(
     dir: &Path,
     dsn: Option<&str>,
     file: &str,
     assignments: &[String],
+    interactive: bool,
 ) -> Result<Vec<String>, String> {
     let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
@@ -353,7 +387,15 @@ fn run(
         .collect();
 
     if !missing.is_empty() {
-        return Err(format!("{file}: unset variables: {}", missing.join(", ")));
+        if !interactive {
+            return Err(format!("{file}: unset variables: {}", missing.join(", ")));
+        }
+
+        // The prompt goes to stderr, so that the standard output holds nothing
+        // but the command line and the output of psql.
+        let asked = ask_variables(&missing, &mut io::stdin().lock(), &mut io::stderr())
+            .map_err(|err| format!("{file}: {err}"))?;
+        variables.extend(asked);
     }
 
     Ok(psql_command(path, dsn, &variables))
@@ -404,7 +446,13 @@ fn main() -> ExitCode {
         return list(&cli.sql_dir);
     };
 
-    let command = match run(&cli.sql_dir, cli.dsn.as_deref(), &file, &cli.variables) {
+    let command = match run(
+        &cli.sql_dir,
+        cli.dsn.as_deref(),
+        &file,
+        &cli.variables,
+        cli.interactive,
+    ) {
         Ok(command) => command,
         Err(err) => {
             eprintln!("sqlrunner: {err}");
@@ -616,6 +664,7 @@ mod tests {
             None,
             "orders.sql",
             &["owner=a's shop".to_string(), "start=2026-08-04".to_string()],
+            false,
         )
         .unwrap();
 
@@ -651,7 +700,7 @@ mod tests {
         std::fs::write(dir.join("stats.sql"), "SELECT :'day';").unwrap();
 
         let dsn = "postgresql://user@host:5432/db?sslmode=require";
-        let command = run(&dir, Some(dsn), "stats.sql", &["day=2026-08-04".into()]).unwrap();
+        let command = run(&dir, Some(dsn), "stats.sql", &["day=2026-08-04".into()], false).unwrap();
 
         // The `?` of the query string is quoted, as a shell would expand it.
         assert_eq!(
@@ -671,7 +720,7 @@ mod tests {
         let dir = temp_dir("quotes-a-dsn-needing-it");
         std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
 
-        let command = run(&dir, Some("host=localhost dbname=db"), "stats.sql", &[]).unwrap();
+        let command = run(&dir, Some("host=localhost dbname=db"), "stats.sql", &[], false).unwrap();
 
         assert_eq!(
             format_command(&command),
@@ -690,7 +739,7 @@ mod tests {
         std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
 
         assert_eq!(
-            format_command(&run(&dir, None, "stats.sql", &[]).unwrap()),
+            format_command(&run(&dir, None, "stats.sql", &[], false).unwrap()),
             format!("psql \\\n    -f {}", dir.join("stats.sql").display())
         );
     }
@@ -701,10 +750,10 @@ mod tests {
         std::fs::write(dir.join("orders.sql"), "SELECT :'start';").unwrap();
 
         // An unknown file, an unset variable, an unused one, and a duplicate.
-        assert!(run(&dir, None, "missing.sql", &[]).is_err());
-        assert!(run(&dir, None, "orders.sql", &[]).is_err());
-        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "other=2".into()]).is_err());
-        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "start=2".into()]).is_err());
+        assert!(run(&dir, None, "missing.sql", &[], false).is_err());
+        assert!(run(&dir, None, "orders.sql", &[], false).is_err());
+        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "other=2".into()], false).is_err());
+        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "start=2".into()], false).is_err());
     }
 
     #[test]
@@ -713,8 +762,8 @@ mod tests {
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/orders.sql"), "SELECT 1;").unwrap();
 
-        assert!(run(&dir, None, "sub/orders.sql", &[]).is_err());
-        assert!(run(&dir, None, "../orders.sql", &[]).is_err());
+        assert!(run(&dir, None, "sub/orders.sql", &[], false).is_err());
+        assert!(run(&dir, None, "../orders.sql", &[], false).is_err());
     }
 
     #[test]
@@ -761,8 +810,38 @@ mod tests {
             vec![
                 ("sql_dir", Some("SQLRUNNER_SQL_DIR")),
                 ("dsn", Some("SQLRUNNER_DSN")),
+                ("interactive", Some("SQLRUNNER_INTERACTIVE")),
             ]
         );
+    }
+
+    #[test]
+    fn asks_for_each_missing_variable() {
+        let mut input = "2026-08-04\na b\n\n".as_bytes();
+        let mut output = Vec::new();
+
+        let variables =
+            ask_variables(&["day", "owner", "empty"], &mut input, &mut output).unwrap();
+
+        assert_eq!(
+            variables,
+            vec![
+                ("day".to_string(), "2026-08-04".to_string()),
+                ("owner".to_string(), "a b".to_string()),
+                ("empty".to_string(), String::new()),
+            ]
+        );
+        assert_eq!(String::from_utf8(output).unwrap(), "day: owner: empty: ");
+    }
+
+    #[test]
+    fn asking_needs_a_value_for_every_variable() {
+        // The input ends before the second variable is answered.
+        let mut input = "2026-08-04\n".as_bytes();
+
+        let err = ask_variables(&["day", "owner"], &mut input, &mut Vec::new()).unwrap_err();
+
+        assert_eq!(err, "owner: no value given");
     }
 
     #[test]

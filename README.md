@@ -6,7 +6,8 @@ A handy tool for running SQL queries.
 
 Early stage. `sqlrunner` currently lists the `.sql` files found in a directory
 along with the psql-style variables they use and their description, and runs one
-of them with psql after printing the command line it uses.
+of them with psql after printing the command line it uses, asking for the
+variables left unset when told to.
 
 ## Requirements
 
@@ -65,10 +66,11 @@ Arguments:
   [NAME=VALUE]...  Value of a variable used by the file
 
 Options:
-      --sql-dir <DIR>  Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
-      --dsn <DSN>      Connection string psql must connect with [env: SQLRUNNER_DSN]
-  -h, --help           Print help (see more with '--help')
-  -V, --version        Print version
+      --sql-dir <DIR>    Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
+      --dsn <DSN>        Connection string psql must connect with [env: SQLRUNNER_DSN]
+  -i, --interactive      Ask for the variables left unset instead of failing [env: SQLRUNNER_INTERACTIVE]
+  -h, --help             Print help (see more with '--help')
+  -V, --version          Print version
 ```
 
 There is no subcommand: the file to run is the first argument, and leaving it
@@ -80,10 +82,11 @@ Every option can also be set through an environment variable named
 `SQLRUNNER_` followed by the option name in upper case, with `-` turned into
 `_`:
 
-| Option      | Variable            |
-| ----------- | ------------------- |
-| `--sql-dir` | `SQLRUNNER_SQL_DIR` |
-| `--dsn`     | `SQLRUNNER_DSN`     |
+| Option          | Variable                |
+| --------------- | ----------------------- |
+| `--sql-dir`     | `SQLRUNNER_SQL_DIR`     |
+| `--dsn`         | `SQLRUNNER_DSN`         |
+| `--interactive` | `SQLRUNNER_INTERACTIVE` |
 
 The command line takes precedence, so a variable acts as a default:
 
@@ -201,6 +204,40 @@ psql \
 Without `--dsn`, no `-d` is emitted and psql takes its connection settings from
 the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused when
 listing, which reads no database.
+
+### Asking for the variables
+
+With `--interactive` (`-i`), a variable the command line leaves unset is asked
+for instead of being an error. The variables are asked for in the order the
+listing shows them, one line each, and the values already given are not asked
+for again:
+
+```sh
+$ sqlrunner --sql-dir ./queries --interactive orders.sql status='in progress'
+end_date: 2026-02-01
+start_date: 2026-01-01
+psql \
+    -v end_date=2026-02-01 \
+    -v start_date=2026-01-01 \
+    -v 'status=in progress' \
+    -f ./queries/orders.sql
+
+...
+```
+
+The prompts go to stderr, so that the standard output holds nothing but the
+command line and the output of psql. An answer is taken as typed, spaces
+included, and an empty line sets an empty value. Input ending before a value is
+given, as when reading from a closed or empty standard input, is an error and
+psql is not started:
+
+```sh
+$ sqlrunner --sql-dir ./queries --interactive orders.sql < /dev/null
+end_date: sqlrunner: orders.sql: end_date: no value given
+```
+
+Without `--interactive`, an unset variable is still the error described above.
+`--interactive` is unused when listing, which needs no variable.
 
 ### Variables
 

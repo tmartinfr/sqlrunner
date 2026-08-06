@@ -3,8 +3,9 @@
 //! This covers what only a real process shows: the options read from the
 //! environment, and the psql run that follows the printed command line.
 
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 /// A DSN no server answers, so that psql fails without needing one.
 const UNREACHABLE_DSN: &str = "host=127.0.0.1 port=1 dbname=nowhere";
@@ -31,6 +32,30 @@ fn sqlrunner(arguments: &[&str], environment: &[(&str, &str)]) -> Output {
     }
 
     command.output().unwrap()
+}
+
+/// Runs the binary as `sqlrunner` does, `input` being fed to its standard input.
+fn sqlrunner_with_input(
+    arguments: &[&str],
+    environment: &[(&str, &str)],
+    input: &str,
+) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sqlrunner"));
+    command.args(arguments).env_clear();
+    command.env("PATH", std::env::var("PATH").unwrap_or_default());
+
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    child.wait_with_output().unwrap()
 }
 
 /// Returns the standard streams of a run as text.
@@ -137,4 +162,59 @@ fn an_invalid_invocation_runs_nothing() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stdout.is_empty(), "stdout: {stdout}");
     assert_eq!(stderr, "sqlrunner: stats.sql: unset variables: day\n");
+}
+
+#[test]
+fn interactive_asks_for_the_unset_variables() {
+    let dir = queries_dir("interactive");
+
+    let output = sqlrunner_with_input(
+        &["--interactive", "stats.sql"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+        ],
+        "2026-08-05\n",
+    );
+    let (stdout, stderr) = streams(&output);
+
+    // The prompt is on stderr, so the command line printed on stdout stays
+    // pasteable, and it carries the value that was typed.
+    assert!(stderr.starts_with("day: "), "stderr: {stderr}");
+    assert!(stdout.contains("-v day=2026-08-05"), "stdout: {stdout}");
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn interactive_comes_from_the_environment_too() {
+    let dir = queries_dir("interactive-env");
+
+    let output = sqlrunner_with_input(
+        &["stats.sql"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+            ("SQLRUNNER_INTERACTIVE", "true"),
+        ],
+        "2026-08-05\n",
+    );
+    let (stdout, _) = streams(&output);
+
+    assert!(stdout.contains("-v day=2026-08-05"), "stdout: {stdout}");
+}
+
+#[test]
+fn interactive_without_an_answer_runs_nothing() {
+    let dir = queries_dir("interactive-no-answer");
+
+    let output = sqlrunner_with_input(
+        &["--interactive", "stats.sql"],
+        &[("SQLRUNNER_SQL_DIR", dir.to_str().unwrap())],
+        "",
+    );
+    let (stdout, stderr) = streams(&output);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert_eq!(stderr, "day: sqlrunner: stats.sql: day: no value given\n");
 }

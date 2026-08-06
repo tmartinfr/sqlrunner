@@ -26,3 +26,5 @@ Remove the run subcommand, the SQL file can be directly passed as first argument
 
 Add a third column to the table listing with an optional description who have to appear as a SQL comment on the first line of a SQL file
 
+Add --interactive top level option. If set, ask for missing variables.
+
