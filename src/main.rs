@@ -3,7 +3,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
+
+/// A shell the completion script can be printed for.
+#[derive(Clone, Copy, ValueEnum)]
+enum Shell {
+    Bash,
+    Zsh,
+}
 
 /// A handy tool for running SQL queries.
 ///
@@ -14,8 +21,13 @@ use clap::Parser;
 #[command(version, about)]
 struct Cli {
     /// Directory containing the .sql files
-    #[arg(long, value_name = "DIR", env = "SQLRUNNER_SQL_DIR")]
-    sql_dir: PathBuf,
+    #[arg(
+        long,
+        value_name = "DIR",
+        env = "SQLRUNNER_SQL_DIR",
+        required_unless_present = "completion"
+    )]
+    sql_dir: Option<PathBuf>,
 
     /// Connection string psql must connect with
     // The value is hidden from the help, as a DSN may embed a password.
@@ -25,6 +37,10 @@ struct Cli {
     /// Ask for the variables left unset instead of failing
     #[arg(short, long, env = "SQLRUNNER_INTERACTIVE")]
     interactive: bool,
+
+    /// Print the completion script to source for a shell
+    #[arg(long, value_name = "SHELL")]
+    completion: Option<Shell>,
 
     /// File to run with psql, as listed when left out
     file: Option<String>,
@@ -439,15 +455,172 @@ fn list(dir: &Path) -> ExitCode {
     exit_code
 }
 
+/// The options taking a value, which therefore swallow the word after them.
+const VALUE_OPTIONS: [&str; 3] = ["--sql-dir", "--dsn", "--completion"];
+
+/// Every option, as offered when the word being completed starts with a dash.
+const OPTIONS: [&str; 9] = [
+    "--completion",
+    "--dsn",
+    "--help",
+    "--interactive",
+    "--sql-dir",
+    "--version",
+    "-V",
+    "-h",
+    "-i",
+];
+
+/// Returns the completion script for `shell`.
+fn completion_script(shell: Shell) -> &'static str {
+    match shell {
+        Shell::Bash => include_str!("../completions/sqlrunner.bash"),
+        Shell::Zsh => include_str!("../completions/sqlrunner.zsh"),
+    }
+}
+
+/// Returns the value `option` is given in `words`, written either way.
+fn option_value<'a>(words: &'a [String], option: &str) -> Option<&'a str> {
+    let mut words = words.iter();
+
+    while let Some(word) = words.next() {
+        if word == option {
+            return words.next().map(String::as_str);
+        }
+        if let Some(value) = word.strip_prefix(option).and_then(|rest| rest.strip_prefix('=')) {
+            return Some(value);
+        }
+    }
+
+    None
+}
+
+/// Returns the words of `words` which are neither an option nor its value: the
+/// file, then the assignments.
+fn positional_words(words: &[String]) -> Vec<&str> {
+    let mut positional = Vec::new();
+    let mut words = words.iter();
+
+    while let Some(word) = words.next() {
+        if VALUE_OPTIONS.contains(&word.as_str()) {
+            words.next();
+        } else if !word.starts_with('-') {
+            positional.push(word.as_str());
+        }
+    }
+
+    positional
+}
+
+/// Returns the `.sql` file of `dir` named `file`, as `run` resolves it.
+fn find_sql_file(dir: &Path, file: &str) -> Option<PathBuf> {
+    list_sql_files(dir)
+        .ok()?
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == file))
+}
+
+/// Returns the `NAME=` of the variables `file` uses and `assignments` leaves out.
+fn variable_candidates(dir: &Path, file: &str, assignments: &[&str]) -> Vec<String> {
+    let Some(path) = find_sql_file(dir, file) else {
+        return Vec::new();
+    };
+    let Ok(sql) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+
+    let already_set: Vec<&str> = assignments
+        .iter()
+        .map(|assignment| assignment.split_once('=').map_or(*assignment, |(name, _)| name))
+        .collect();
+
+    extract_variables(&sql)
+        .into_iter()
+        .filter(|name| !already_set.contains(&name.as_str()))
+        .map(|name| format!("{name}="))
+        .collect()
+}
+
+/// Returns the candidates completing the last word of `words`, the command line
+/// typed so far, `default_dir` standing for the directory of the environment.
+///
+/// The words before the last one tell what is being completed: an option value,
+/// an option, the file, or a variable of that file. Anything unreadable yields
+/// no candidate, as a completion must stay silent.
+fn complete(words: &[String], default_dir: Option<&Path>) -> Vec<String> {
+    let (current, previous) = match words.split_last() {
+        Some((current, previous)) => (current.as_str(), previous),
+        None => ("", [].as_slice()),
+    };
+
+    let candidates = match previous.last().map(String::as_str) {
+        // The shell completes a path better than we would.
+        Some("--sql-dir" | "--dsn") => Vec::new(),
+        Some("--completion") => vec!["bash".to_string(), "zsh".to_string()],
+        _ if current.starts_with('-') => {
+            OPTIONS.iter().map(|option| option.to_string()).collect()
+        }
+        _ => {
+            let dir = option_value(previous, "--sql-dir")
+                .map(PathBuf::from)
+                .or_else(|| default_dir.map(PathBuf::from));
+            let Some(dir) = dir else {
+                return Vec::new();
+            };
+
+            let positional = positional_words(previous);
+            match positional.split_first() {
+                None => list_sql_files(&dir)
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .collect(),
+                Some((file, assignments)) => variable_candidates(&dir, file, assignments),
+            }
+        }
+    };
+
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.starts_with(current))
+        .collect()
+}
+
 fn main() -> ExitCode {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+
+    // Completion is handled before clap, which would trip on the partial words
+    // being completed and on the --sql-dir they may not carry yet.
+    if arguments.first().is_some_and(|first| first == "--complete") {
+        let default_dir = std::env::var_os("SQLRUNNER_SQL_DIR").map(PathBuf::from);
+
+        for candidate in complete(&arguments[1..], default_dir.as_deref()) {
+            println!("{candidate}");
+        }
+
+        return ExitCode::SUCCESS;
+    }
+
     let cli = Cli::parse();
 
+    if let Some(shell) = cli.completion {
+        print!("{}", completion_script(shell));
+        return ExitCode::SUCCESS;
+    }
+
+    // Clap requires --sql-dir unless --completion is given, which just returned.
+    let Some(sql_dir) = cli.sql_dir else {
+        eprintln!("sqlrunner: --sql-dir is required");
+        return ExitCode::FAILURE;
+    };
+
     let Some(file) = cli.file else {
-        return list(&cli.sql_dir);
+        return list(&sql_dir);
     };
 
     let command = match run(
-        &cli.sql_dir,
+        &sql_dir,
         cli.dsn.as_deref(),
         &file,
         &cli.variables,
@@ -811,6 +984,7 @@ mod tests {
                 ("sql_dir", Some("SQLRUNNER_SQL_DIR")),
                 ("dsn", Some("SQLRUNNER_DSN")),
                 ("interactive", Some("SQLRUNNER_INTERACTIVE")),
+                ("completion", None),
             ]
         );
     }
@@ -842,6 +1016,91 @@ mod tests {
         let err = ask_variables(&["day", "owner"], &mut input, &mut Vec::new()).unwrap_err();
 
         assert_eq!(err, "owner: no value given");
+    }
+
+    /// Creates a directory holding two files, one of them using two variables.
+    fn completion_dir(name: &str) -> PathBuf {
+        let dir = temp_dir(name);
+        std::fs::write(dir.join("orders.sql"), "SELECT :'day', :'owner';").unwrap();
+        std::fs::write(dir.join("users.sql"), "SELECT 1;").unwrap();
+        std::fs::write(dir.join("notes.txt"), "").unwrap();
+        dir
+    }
+
+    /// Completes `words`, the last one being the word under the cursor.
+    fn complete_words(dir: &Path, words: &[&str]) -> Vec<String> {
+        let words: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        complete(&words, Some(dir))
+    }
+
+    #[test]
+    fn completes_the_sql_files_of_the_directory() {
+        let dir = completion_dir("completes-files");
+
+        assert_eq!(complete_words(&dir, &[""]), vec!["orders.sql", "users.sql"]);
+        assert_eq!(complete_words(&dir, &["o"]), vec!["orders.sql"]);
+    }
+
+    #[test]
+    fn completes_the_directory_given_on_the_command_line() {
+        let dir = completion_dir("completes-given-directory");
+        let elsewhere = temp_dir("completes-given-directory-empty");
+
+        let words = ["--sql-dir".to_string(), dir.display().to_string(), String::new()];
+        assert_eq!(complete(&words, Some(&elsewhere)), vec!["orders.sql", "users.sql"]);
+
+        let words = [format!("--sql-dir={}", dir.display()), String::new()];
+        assert_eq!(complete(&words, Some(&elsewhere)), vec!["orders.sql", "users.sql"]);
+    }
+
+    #[test]
+    fn completes_the_variables_of_the_file() {
+        let dir = completion_dir("completes-variables");
+
+        assert_eq!(complete_words(&dir, &["orders.sql", ""]), vec!["day=", "owner="]);
+        assert_eq!(complete_words(&dir, &["orders.sql", "o"]), vec!["owner="]);
+        assert!(complete_words(&dir, &["users.sql", ""]).is_empty());
+    }
+
+    #[test]
+    fn completes_only_the_variables_left_unset() {
+        let dir = completion_dir("completes-unset-variables");
+
+        assert_eq!(
+            complete_words(&dir, &["orders.sql", "day=2026-08-07", ""]),
+            vec!["owner="]
+        );
+    }
+
+    #[test]
+    fn completes_past_the_options_and_their_value() {
+        let dir = completion_dir("completes-past-options");
+
+        assert_eq!(
+            complete_words(&dir, &["-i", "--dsn", "orders.sql", "orders.sql", ""]),
+            vec!["day=", "owner="]
+        );
+    }
+
+    #[test]
+    fn completes_the_options_and_the_shells() {
+        let dir = completion_dir("completes-options");
+
+        assert_eq!(complete_words(&dir, &["--s"]), vec!["--sql-dir"]);
+        assert_eq!(complete_words(&dir, &["--completion", ""]), vec!["bash", "zsh"]);
+        // The shell knows the paths better than we do.
+        assert!(complete_words(&dir, &["--sql-dir", ""]).is_empty());
+        assert!(complete_words(&dir, &["--dsn", ""]).is_empty());
+    }
+
+    #[test]
+    fn completing_stays_silent_without_a_readable_directory() {
+        let dir = temp_dir("completes-missing-directory");
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(complete_words(&dir, &[""]).is_empty());
+        assert!(complete_words(&dir, &["orders.sql", ""]).is_empty());
+        assert!(complete(&[String::new()], None).is_empty());
     }
 
     #[test]

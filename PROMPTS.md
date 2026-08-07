@@ -28,3 +28,5 @@ Add a third column to the table listing with an optional description who have to
 
 Add --interactive top level option. If set, ask for missing variables.
 
+Add automatic completion on SQL filename and variables
+

@@ -218,3 +218,28 @@ fn interactive_without_an_answer_runs_nothing() {
     assert!(stdout.is_empty(), "stdout: {stdout}");
     assert_eq!(stderr, "day: sqlrunner: stats.sql: day: no value given\n");
 }
+
+#[test]
+fn completing_prints_one_candidate_per_line() {
+    let dir = queries_dir("complete");
+    let environment = [("SQLRUNNER_SQL_DIR", dir.to_str().unwrap())];
+
+    let output = sqlrunner(&["--complete", ""], &environment);
+    let (stdout, _) = streams(&output);
+    assert!(output.status.success());
+    assert_eq!(stdout, "stats.sql\n");
+
+    let output = sqlrunner(&["--complete", "stats.sql", ""], &environment);
+    let (stdout, _) = streams(&output);
+    assert!(output.status.success());
+    assert_eq!(stdout, "day=\n");
+}
+
+#[test]
+fn the_completion_script_needs_no_sql_dir() {
+    let output = sqlrunner(&["--completion", "bash"], &[]);
+    let (stdout, stderr) = streams(&output);
+
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(stdout.contains("complete -F _sqlrunner sqlrunner"), "stdout: {stdout}");
+}

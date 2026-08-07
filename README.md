@@ -7,7 +7,8 @@ A handy tool for running SQL queries.
 Early stage. `sqlrunner` currently lists the `.sql` files found in a directory
 along with the psql-style variables they use and their description, and runs one
 of them with psql after printing the command line it uses, asking for the
-variables left unset when told to.
+variables left unset when told to. bash and zsh can complete the file and its
+variables.
 
 ## Requirements
 
@@ -59,18 +60,19 @@ The binary is then `./target/release/sqlrunner`.
 ## Usage
 
 ```
-Usage: sqlrunner [OPTIONS] --sql-dir <DIR> [FILE] [NAME=VALUE]...
+Usage: sqlrunner [OPTIONS] [FILE] [NAME=VALUE]...
 
 Arguments:
   [FILE]           File to run with psql, as listed when left out
   [NAME=VALUE]...  Value of a variable used by the file
 
 Options:
-      --sql-dir <DIR>    Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
-      --dsn <DSN>        Connection string psql must connect with [env: SQLRUNNER_DSN]
-  -i, --interactive      Ask for the variables left unset instead of failing [env: SQLRUNNER_INTERACTIVE]
-  -h, --help             Print help (see more with '--help')
-  -V, --version          Print version
+      --sql-dir <DIR>       Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
+      --dsn <DSN>           Connection string psql must connect with [env: SQLRUNNER_DSN]
+  -i, --interactive         Ask for the variables left unset instead of failing [env: SQLRUNNER_INTERACTIVE]
+      --completion <SHELL>  Print the completion script to source for a shell [possible values: bash, zsh]
+  -h, --help                Print help (see more with '--help')
+  -V, --version             Print version
 ```
 
 There is no subcommand: the file to run is the first argument, and leaving it
@@ -107,9 +109,9 @@ psql \
 ...
 ```
 
-`--sql-dir` stays mandatory: setting neither the option nor its variable is an
-error. The value of `SQLRUNNER_DSN` is kept out of `--help`, as a connection
-string may embed a password.
+`--sql-dir` stays mandatory, except with `--completion`: setting neither the
+option nor its variable is an error. The value of `SQLRUNNER_DSN` is kept out of
+`--help`, as a connection string may embed a password.
 
 ### Listing the files
 
@@ -276,6 +278,42 @@ The `--` marker and the spaces around the text are left out. A file whose first
 line is not such a comment, or whose comment holds nothing but spaces, has an
 empty `DESCRIPTION` cell. Only the first line is looked at: a comment further
 down the file, or one trailing a statement, is not a description.
+
+## Completion
+
+`sqlrunner --completion <SHELL>` prints the completion script of a shell, bash
+or zsh. Source it from the shell startup file:
+
+```sh
+# ~/.bashrc
+source <(sqlrunner --completion bash)
+```
+
+```sh
+# ~/.zshrc, after compinit has run
+source <(sqlrunner --completion zsh)
+```
+
+The candidates are computed by `sqlrunner` itself, which the script calls, so
+they always match the directory in use:
+
+```sh
+$ sqlrunner <TAB>
+orders.sql  stats.sql  users.sql
+$ sqlrunner orders.sql <TAB>
+end_date=  start_date=  status=
+$ sqlrunner orders.sql status=paid <TAB>
+end_date=  start_date=
+```
+
+A variable is completed up to its `=`, with no space after it, and the names
+already given are left out. The file completed on is the one the directory
+holds, `--sql-dir` on the command line taking precedence over
+`SQLRUNNER_SQL_DIR`, as when running. A word starting with `-` completes to the
+options, and `--sql-dir` falls back to the path completion of the shell.
+
+The script calls `sqlrunner --complete` with the words typed so far. That option
+is internal, prints one candidate per line, and is of no use by hand.
 
 ## Test
 
