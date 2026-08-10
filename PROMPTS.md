@@ -32,3 +32,5 @@ Add automatic completion on SQL filename and variables
 
 
 Run psql with --quiet option
+
+Display psql command line with --quiet on the same line as psql

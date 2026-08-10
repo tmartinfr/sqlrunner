@@ -107,8 +107,7 @@ fn running_prints_the_command_line_then_runs_it() {
     assert_eq!(
         stdout,
         format!(
-            "psql \\\n    \
-                 --quiet \\\n    \
+            "psql --quiet \\\n    \
                  -d '{UNREACHABLE_DSN}' \\\n    \
                  -v day=2026-08-05 \\\n    \
                  -f {}\n\n",

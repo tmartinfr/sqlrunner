@@ -101,8 +101,7 @@ orders.sql  end_date, start_date, status  Orders of a period, by status
 stats.sql
 users.sql   user_id                       Details of one user
 $ sqlrunner --dsn 'host=localhost dbname=dev' users.sql user_id=42
-psql \
-    --quiet \
+psql --quiet \
     -d 'host=localhost dbname=dev' \
     -v user_id=42 \
     -f ./queries/users.sql
@@ -141,8 +140,7 @@ option per line, then a blank line, then the output of psql itself:
 ```sh
 $ sqlrunner --sql-dir ./queries orders.sql status='in progress' \
     start_date=2026-01-01 end_date=2026-02-01
-psql \
-    --quiet \
+psql --quiet \
     -v end_date=2026-02-01 \
     -v start_date=2026-01-01 \
     -v 'status=in progress' \
@@ -187,8 +185,7 @@ are passed through untouched, a URI:
 ```sh
 $ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
     users.sql user_id=42
-psql \
-    --quiet \
+psql --quiet \
     -d postgresql://me@db.example.com/prod \
     -v user_id=42 \
     -f ./queries/users.sql
@@ -201,8 +198,7 @@ or a keyword/value string:
 ```sh
 $ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
     users.sql user_id=42
-psql \
-    --quiet \
+psql --quiet \
     -d 'host=localhost dbname=prod' \
     -v user_id=42 \
     -f ./queries/users.sql
@@ -225,8 +221,7 @@ for again:
 $ sqlrunner --sql-dir ./queries --interactive orders.sql status='in progress'
 end_date: 2026-02-01
 start_date: 2026-01-01
-psql \
-    --quiet \
+psql --quiet \
     -v end_date=2026-02-01 \
     -v start_date=2026-01-01 \
     -v 'status=in progress' \

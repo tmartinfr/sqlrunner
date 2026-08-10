@@ -291,16 +291,19 @@ fn psql_command(
 /// the program on the first line then one option per continuation line.
 ///
 /// An option is a flag and the value that follows it, as psql takes them, a
-/// flag taking no value standing on its own line.
+/// flag taking no value staying on the line of what precedes it.
 fn format_command(command: &[String]) -> String {
     let mut lines = vec![shell_quote(&command[0])];
 
-    for argument in &command[1..] {
+    for (i, argument) in command.iter().enumerate().skip(1) {
+        let is_flag = |argument: &String| argument.starts_with('-');
+        // A flag is followed by its value, unless the next argument is a flag
+        // of its own or there is none left.
+        let takes_value = is_flag(argument) && command.get(i + 1).is_some_and(|next| !is_flag(next));
         let argument = shell_quote(argument);
 
-        // A flag opens a line, the value that follows it joining that line.
         match lines.last_mut() {
-            Some(line) if !argument.starts_with('-') && line.starts_with(' ') => {
+            Some(line) if !takes_value => {
                 line.push(' ');
                 line.push_str(&argument);
             }
@@ -871,8 +874,7 @@ mod tests {
         assert_eq!(
             format_command(&command),
             format!(
-                "psql \\\n    \
-                     --quiet \\\n    \
+                "psql --quiet \\\n    \
                      -v 'owner=a'\\''s shop' \\\n    \
                      -v start=2026-08-04 \\\n    \
                      -f {}",
@@ -893,8 +895,7 @@ mod tests {
         assert_eq!(
             format_command(&command),
             format!(
-                "psql \\\n    \
-                     --quiet \\\n    \
+                "psql --quiet \\\n    \
                      -d '{dsn}' \\\n    \
                      -v day=2026-08-04 \\\n    \
                      -f {}",
@@ -913,8 +914,7 @@ mod tests {
         assert_eq!(
             format_command(&command),
             format!(
-                "psql \\\n    \
-                     --quiet \\\n    \
+                "psql --quiet \\\n    \
                      -d 'host=localhost dbname=db' \\\n    \
                      -f {}",
                 dir.join("stats.sql").display()
@@ -929,7 +929,7 @@ mod tests {
 
         assert_eq!(
             format_command(&run(&dir, None, "stats.sql", &[], false).unwrap()),
-            format!("psql \\\n    --quiet \\\n    -f {}", dir.join("stats.sql").display())
+            format!("psql --quiet \\\n    -f {}", dir.join("stats.sql").display())
         );
     }
 
