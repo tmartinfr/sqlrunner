@@ -108,6 +108,7 @@ fn running_prints_the_command_line_then_runs_it() {
         stdout,
         format!(
             "psql \\\n    \
+                 --quiet \\\n    \
                  -d '{UNREACHABLE_DSN}' \\\n    \
                  -v day=2026-08-05 \\\n    \
                  -f {}\n\n",

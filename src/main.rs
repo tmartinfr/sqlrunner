@@ -262,12 +262,15 @@ fn shell_quote(argument: &str) -> String {
 /// vector starting with the program name.
 ///
 /// Without a `dsn`, psql takes its connection settings from the environment.
+///
+/// `--quiet` leaves only what the file itself outputs, the banner and the
+/// command tags of each statement being noise here.
 fn psql_command(
     file: &Path,
     dsn: Option<&str>,
     variables: &BTreeMap<String, String>,
 ) -> Vec<String> {
-    let mut command = vec!["psql".to_string()];
+    let mut command = vec!["psql".to_string(), "--quiet".to_string()];
 
     if let Some(dsn) = dsn {
         command.push("-d".to_string());
@@ -287,13 +290,22 @@ fn psql_command(
 /// Renders `command` as a command line a POSIX shell would run identically,
 /// the program on the first line then one option per continuation line.
 ///
-/// An option is a flag and the value that follows it, as psql takes them.
+/// An option is a flag and the value that follows it, as psql takes them, a
+/// flag taking no value standing on its own line.
 fn format_command(command: &[String]) -> String {
     let mut lines = vec![shell_quote(&command[0])];
 
-    for option in command[1..].chunks(2) {
-        let arguments: Vec<String> = option.iter().map(|argument| shell_quote(argument)).collect();
-        lines.push(format!("    {}", arguments.join(" ")));
+    for argument in &command[1..] {
+        let argument = shell_quote(argument);
+
+        // A flag opens a line, the value that follows it joining that line.
+        match lines.last_mut() {
+            Some(line) if !argument.starts_with('-') && line.starts_with(' ') => {
+                line.push(' ');
+                line.push_str(&argument);
+            }
+            _ => lines.push(format!("    {argument}")),
+        }
     }
 
     lines.join(" \\\n")
@@ -847,6 +859,7 @@ mod tests {
             command,
             vec![
                 "psql",
+                "--quiet",
                 "-v",
                 "owner=a's shop",
                 "-v",
@@ -859,6 +872,7 @@ mod tests {
             format_command(&command),
             format!(
                 "psql \\\n    \
+                     --quiet \\\n    \
                      -v 'owner=a'\\''s shop' \\\n    \
                      -v start=2026-08-04 \\\n    \
                      -f {}",
@@ -880,6 +894,7 @@ mod tests {
             format_command(&command),
             format!(
                 "psql \\\n    \
+                     --quiet \\\n    \
                      -d '{dsn}' \\\n    \
                      -v day=2026-08-04 \\\n    \
                      -f {}",
@@ -899,6 +914,7 @@ mod tests {
             format_command(&command),
             format!(
                 "psql \\\n    \
+                     --quiet \\\n    \
                      -d 'host=localhost dbname=db' \\\n    \
                      -f {}",
                 dir.join("stats.sql").display()
@@ -913,7 +929,7 @@ mod tests {
 
         assert_eq!(
             format_command(&run(&dir, None, "stats.sql", &[], false).unwrap()),
-            format!("psql \\\n    -f {}", dir.join("stats.sql").display())
+            format!("psql \\\n    --quiet \\\n    -f {}", dir.join("stats.sql").display())
         );
     }
 

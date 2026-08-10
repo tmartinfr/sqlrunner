@@ -102,6 +102,7 @@ stats.sql
 users.sql   user_id                       Details of one user
 $ sqlrunner --dsn 'host=localhost dbname=dev' users.sql user_id=42
 psql \
+    --quiet \
     -d 'host=localhost dbname=dev' \
     -v user_id=42 \
     -f ./queries/users.sql
@@ -141,6 +142,7 @@ option per line, then a blank line, then the output of psql itself:
 $ sqlrunner --sql-dir ./queries orders.sql status='in progress' \
     start_date=2026-01-01 end_date=2026-02-01
 psql \
+    --quiet \
     -v end_date=2026-02-01 \
     -v start_date=2026-01-01 \
     -v 'status=in progress' \
@@ -160,6 +162,9 @@ The file is named as the listing shows it, and must be one of the listed files:
 a path is not accepted. Each variable the file uses must be assigned exactly
 once, and only those it uses may be assigned. Everything after the first `=` is
 the value, so it may itself contain `=` or be empty.
+
+psql is always run with `--quiet`, so its output holds nothing but what the file
+itself produces, without the welcome banner or the command tag of each statement.
 
 psql is looked up in the `PATH` and inherits the standard streams, so its output
 and any prompt it makes reach the terminal unchanged. The printed command line is
@@ -183,6 +188,7 @@ are passed through untouched, a URI:
 $ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
     users.sql user_id=42
 psql \
+    --quiet \
     -d postgresql://me@db.example.com/prod \
     -v user_id=42 \
     -f ./queries/users.sql
@@ -196,6 +202,7 @@ or a keyword/value string:
 $ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
     users.sql user_id=42
 psql \
+    --quiet \
     -d 'host=localhost dbname=prod' \
     -v user_id=42 \
     -f ./queries/users.sql
@@ -219,6 +226,7 @@ $ sqlrunner --sql-dir ./queries --interactive orders.sql status='in progress'
 end_date: 2026-02-01
 start_date: 2026-01-01
 psql \
+    --quiet \
     -v end_date=2026-02-01 \
     -v start_date=2026-01-01 \
     -v 'status=in progress' \

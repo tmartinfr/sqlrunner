@@ -30,3 +30,5 @@ Add --interactive top level option. If set, ask for missing variables.
 
 Add automatic completion on SQL filename and variables
 
+
+Run psql with --quiet option
