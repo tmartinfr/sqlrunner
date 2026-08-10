@@ -34,3 +34,7 @@ Add automatic completion on SQL filename and variables
 Run psql with --quiet option
 
 Display psql command line with --quiet on the same line as psql
+
+Add an example directory with a few SQL files to try the tool on, one of them
+holding variable lookalikes in comments, literals and quoted identifiers, plus a
+schema file creating the tables they read with some rows

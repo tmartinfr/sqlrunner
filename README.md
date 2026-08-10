@@ -57,6 +57,22 @@ cargo build --release
 
 The binary is then `./target/release/sqlrunner`.
 
+## Example
+
+The `example` directory holds a few `.sql` files to try the tool on, and
+`example.schema.sql` creates the tables they read, with a few rows:
+
+```sh
+psql -d 'host=localhost dbname=dev' -f example.schema.sql
+sqlrunner --sql-dir ./example
+```
+
+`orders.sql`, `stats.sql` and `users.sql` are plain queries, with and without
+variables. `audit.sql` shows what is not a variable: it holds `:'name'`
+lookalikes in comments, string literals, a dollar-quoted string and a quoted
+identifier, none of which appear among its variables. Every example below runs
+on that directory.
+
 ## Usage
 
 ```
@@ -93,18 +109,19 @@ Every option can also be set through an environment variable named
 The command line takes precedence, so a variable acts as a default:
 
 ```sh
-$ export SQLRUNNER_SQL_DIR=./queries
+$ export SQLRUNNER_SQL_DIR=./example
 $ export SQLRUNNER_DSN='postgresql://me@db.example.com/prod'
 $ sqlrunner
-FILE        VARIABLES                     DESCRIPTION
-orders.sql  end_date, start_date, status  Orders of a period, by status
-stats.sql
-users.sql   user_id                       Details of one user
+FILE        VARIABLES                      DESCRIPTION
+audit.sql   action, row_limit, table_name  Audit trail of a table, ignoring quoted lookalikes
+orders.sql  end_date, start_date, status   Orders of a period, by status
+stats.sql                                  User counts, total and last 30 days
+users.sql   user_id                        Details of one user
 $ sqlrunner --dsn 'host=localhost dbname=dev' users.sql user_id=42
 psql --quiet \
     -d 'host=localhost dbname=dev' \
     -v user_id=42 \
-    -f ./queries/users.sql
+    -f ./example/users.sql
 
 ...
 ```
@@ -120,11 +137,12 @@ table, sorted by base filename, with the psql-style variables each file uses and
 its description:
 
 ```sh
-$ sqlrunner --sql-dir ./queries
-FILE        VARIABLES                     DESCRIPTION
-orders.sql  end_date, start_date, status  Orders of a period, by status
-stats.sql
-users.sql   user_id                       Details of one user
+$ sqlrunner --sql-dir ./example
+FILE        VARIABLES                      DESCRIPTION
+audit.sql   action, row_limit, table_name  Audit trail of a table, ignoring quoted lookalikes
+orders.sql  end_date, start_date, status   Orders of a period, by status
+stats.sql                                  User counts, total and last 30 days
+users.sql   user_id                        Details of one user
 ```
 
 Only regular files directly inside the directory are listed: subdirectories are
@@ -138,18 +156,19 @@ the `NAME=VALUE` arguments that follow. The command line is printed first, one
 option per line, then a blank line, then the output of psql itself:
 
 ```sh
-$ sqlrunner --sql-dir ./queries orders.sql status='in progress' \
+$ sqlrunner --sql-dir ./example orders.sql status='in progress' \
     start_date=2026-01-01 end_date=2026-02-01
 psql --quiet \
     -v end_date=2026-02-01 \
     -v start_date=2026-01-01 \
     -v 'status=in progress' \
-    -f ./queries/orders.sql
+    -f ./example/orders.sql
 
- id | total
-----+-------
-  7 | 42.00
-(1 row)
+ id |   status    | total
+----+-------------+--------
+  1 | in progress |  42.00
+  3 | in progress | 128.90
+(2 rows)
 ```
 
 The command line is displayed in purple, so it stands out from the output of
@@ -175,7 +194,7 @@ not be run at all is reported on stderr and exits with status 1, without psql
 being started:
 
 ```sh
-$ sqlrunner --sql-dir ./queries orders.sql start_date=2026-01-01
+$ sqlrunner --sql-dir ./example orders.sql start_date=2026-01-01
 sqlrunner: orders.sql: unset variables: end_date, status
 ```
 
@@ -183,12 +202,12 @@ sqlrunner: orders.sql: unset variables: end_date, status
 are passed through untouched, a URI:
 
 ```sh
-$ sqlrunner --sql-dir ./queries --dsn 'postgresql://me@db.example.com/prod' \
+$ sqlrunner --sql-dir ./example --dsn 'postgresql://me@db.example.com/prod' \
     users.sql user_id=42
 psql --quiet \
     -d postgresql://me@db.example.com/prod \
     -v user_id=42 \
-    -f ./queries/users.sql
+    -f ./example/users.sql
 
 ...
 ```
@@ -196,12 +215,12 @@ psql --quiet \
 or a keyword/value string:
 
 ```sh
-$ sqlrunner --sql-dir ./queries --dsn 'host=localhost dbname=prod' \
+$ sqlrunner --sql-dir ./example --dsn 'host=localhost dbname=prod' \
     users.sql user_id=42
 psql --quiet \
     -d 'host=localhost dbname=prod' \
     -v user_id=42 \
-    -f ./queries/users.sql
+    -f ./example/users.sql
 
 ...
 ```
@@ -218,14 +237,14 @@ listing shows them, one line each, and the values already given are not asked
 for again:
 
 ```sh
-$ sqlrunner --sql-dir ./queries --interactive orders.sql status='in progress'
+$ sqlrunner --sql-dir ./example --interactive orders.sql status='in progress'
 end_date: 2026-02-01
 start_date: 2026-01-01
 psql --quiet \
     -v end_date=2026-02-01 \
     -v start_date=2026-01-01 \
     -v 'status=in progress' \
-    -f ./queries/orders.sql
+    -f ./example/orders.sql
 
 ...
 ```
@@ -237,7 +256,7 @@ given, as when reading from a closed or empty standard input, is an error and
 psql is not started:
 
 ```sh
-$ sqlrunner --sql-dir ./queries --interactive orders.sql < /dev/null
+$ sqlrunner --sql-dir ./example --interactive orders.sql < /dev/null
 end_date: sqlrunner: orders.sql: end_date: no value given
 ```
 
@@ -302,7 +321,7 @@ they always match the directory in use:
 
 ```sh
 $ sqlrunner <TAB>
-orders.sql  stats.sql  users.sql
+audit.sql  orders.sql  stats.sql  users.sql
 $ sqlrunner orders.sql <TAB>
 end_date=  start_date=  status=
 $ sqlrunner orders.sql status=paid <TAB>
