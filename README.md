@@ -1,14 +1,29 @@
 # sqlrunner
 
-A handy tool for running SQL queries.
+Turn a directory of `.sql` files into a catalog of ready-to-run queries.
 
-## Status
+Teams end up with a pile of useful queries: the one that audits a table, the one
+that lists the orders of a period, the one that looks up a user. They live in a
+wiki page, a chat history or someone's home directory, and running one means
+finding it again, remembering which values it expects, and typing a long psql
+command line without a mistake.
 
-Early stage. `sqlrunner` currently lists the `.sql` files found in a directory
-along with the psql-style variables they use and their description, and runs one
-of them with psql after printing the command line it uses, asking for the
-variables left unset when told to. bash and zsh can complete the file and its
-variables.
+`sqlrunner` makes that directory self-describing and runnable:
+
+- `sqlrunner` alone lists the files, the psql-style variables each one uses and a
+  one-line description read from the file itself, so a query is discoverable
+  without being opened.
+- `sqlrunner orders.sql status=paid ...` runs it with psql, values passed as
+  variables rather than edited into the file.
+- Missing a value is an error, not a query silently run on the wrong data. With
+  `--interactive` the missing values are asked for instead.
+- The psql command line is printed before running, quoted for a shell, so what
+  happened is visible and can be pasted, tweaked or shared.
+- bash and zsh complete the file names and their variables, computed from the
+  directory in use.
+
+Nothing is stored outside the `.sql` files: the descriptions and the variables
+are read from them, so the catalog is just the directory under version control.
 
 ## Requirements
 
