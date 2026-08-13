@@ -41,3 +41,5 @@ schema file creating the tables they read with some rows
 
 Improve README.md by presenting first why the program is useful. Remove the early
 stage mention.
+
+Add relevant emojis to README.md

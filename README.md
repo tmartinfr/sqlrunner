@@ -1,6 +1,6 @@
-# sqlrunner
+# 🏃 sqlrunner
 
-Turn a directory of `.sql` files into a catalog of ready-to-run queries.
+Turn a directory of `.sql` files into a catalog of ready-to-run queries. 📂 ➡️ ▶️
 
 Teams end up with a pile of useful queries: the one that audits a table, the one
 that lists the orders of a period, the one that looks up a user. They live in a
@@ -10,27 +10,27 @@ command line without a mistake.
 
 `sqlrunner` makes that directory self-describing and runnable:
 
-- `sqlrunner` alone lists the files, the psql-style variables each one uses and a
-  one-line description read from the file itself, so a query is discoverable
+- 📋 `sqlrunner` alone lists the files, the psql-style variables each one uses and
+  a one-line description read from the file itself, so a query is discoverable
   without being opened.
-- `sqlrunner orders.sql status=paid ...` runs it with psql, values passed as
+- ▶️ `sqlrunner orders.sql status=paid ...` runs it with psql, values passed as
   variables rather than edited into the file.
-- Missing a value is an error, not a query silently run on the wrong data. With
+- 🛡️ Missing a value is an error, not a query silently run on the wrong data. With
   `--interactive` the missing values are asked for instead.
-- The psql command line is printed before running, quoted for a shell, so what
+- 👀 The psql command line is printed before running, quoted for a shell, so what
   happened is visible and can be pasted, tweaked or shared.
-- bash and zsh complete the file names and their variables, computed from the
+- ⌨️ bash and zsh complete the file names and their variables, computed from the
   directory in use.
 
 Nothing is stored outside the `.sql` files: the descriptions and the variables
 are read from them, so the catalog is just the directory under version control.
 
-## Requirements
+## 📦 Requirements
 
 - Rust (edition 2024, tested with cargo 1.93)
 - psql in the `PATH`, to run a file
 
-## Install
+## 🔧 Install
 
 With `cargo install`, straight from the repository:
 
@@ -62,7 +62,7 @@ sqlrunner --version
 Re-run the same command to upgrade, and `cargo uninstall sqlrunner` to remove
 it.
 
-## Build
+## 🛠️ Build
 
 To build without installing, from a clone:
 
@@ -72,7 +72,7 @@ cargo build --release
 
 The binary is then `./target/release/sqlrunner`.
 
-## Example
+## 🧪 Example
 
 The `example` directory holds a few `.sql` files to try the tool on, and
 `example.schema.sql` creates the tables they read, with a few rows:
@@ -88,7 +88,7 @@ lookalikes in comments, string literals, a dollar-quoted string and a quoted
 identifier, none of which appear among its variables. Every example below runs
 on that directory.
 
-## Usage
+## 🚀 Usage
 
 ```
 Usage: sqlrunner [OPTIONS] [FILE] [NAME=VALUE]...
@@ -109,7 +109,7 @@ Options:
 There is no subcommand: the file to run is the first argument, and leaving it
 out lists the files instead.
 
-### Environment variables
+### 🌱 Environment variables
 
 Every option can also be set through an environment variable named
 `SQLRUNNER_` followed by the option name in upper case, with `-` turned into
@@ -145,7 +145,7 @@ psql --quiet \
 option nor its variable is an error. The value of `SQLRUNNER_DSN` is kept out of
 `--help`, as a connection string may embed a password.
 
-### Listing the files
+### 📋 Listing the files
 
 Without a file argument, list the `.sql` files of a directory as a three-column
 table, sorted by base filename, with the psql-style variables each file uses and
@@ -164,7 +164,7 @@ Only regular files directly inside the directory are listed: subdirectories are
 not traversed, and files with another extension are ignored. An unreadable or
 missing directory is reported on stderr and exits with status 1.
 
-### Running a file
+### ▶️ Running a file
 
 Pass a file as the first argument to run it with psql, its variables set from
 the `NAME=VALUE` arguments that follow. The command line is printed first, one
@@ -244,7 +244,7 @@ Without `--dsn`, no `-d` is emitted and psql takes its connection settings from
 the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused when
 listing, which reads no database.
 
-### Asking for the variables
+### 💬 Asking for the variables
 
 With `--interactive` (`-i`), a variable the command line leaves unset is asked
 for instead of being an error. The variables are asked for in the order the
@@ -278,7 +278,7 @@ end_date: sqlrunner: orders.sql: end_date: no value given
 Without `--interactive`, an unset variable is still the error described above.
 `--interactive` is unused when listing, which needs no variable.
 
-### Variables
+### 🔤 Variables
 
 A variable is a `:'name'` reference, the psql form that interpolates a value as
 a quoted SQL literal:
@@ -301,7 +301,7 @@ Occurrences that psql would not interpolate are ignored:
 A file that cannot be read is reported on stderr, the other files are still
 listed, and the exit status is 1.
 
-### Descriptions
+### 📝 Descriptions
 
 A description is optional: it is the text of a `--` comment making up the first
 line of a file, and says in a few words what the file does.
@@ -316,7 +316,7 @@ line is not such a comment, or whose comment holds nothing but spaces, has an
 empty `DESCRIPTION` cell. Only the first line is looked at: a comment further
 down the file, or one trailing a statement, is not a description.
 
-## Completion
+## ⌨️ Completion
 
 `sqlrunner --completion <SHELL>` prints the completion script of a shell, bash
 or zsh. Source it from the shell startup file:
@@ -352,7 +352,7 @@ options, and `--sql-dir` falls back to the path completion of the shell.
 The script calls `sqlrunner --complete` with the words typed so far. That option
 is internal, prints one candidate per line, and is of no use by hand.
 
-## Test
+## ✅ Test
 
 ```sh
 cargo test
