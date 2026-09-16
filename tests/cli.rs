@@ -219,6 +219,84 @@ fn interactive_without_an_answer_runs_nothing() {
     assert_eq!(stderr, "day: sqlrunner: stats.sql: day: no value given\n");
 }
 
+/// Writes into `dir` an editor appending `addition` to the file it is given,
+/// and returns the `EDITOR` value running it.
+///
+/// It is run through `sh`, so that the test needs no executable bit.
+fn editor_appending(dir: &std::path::Path, addition: &str) -> String {
+    let script = dir.join("editor.sh");
+    std::fs::write(&script, format!("printf '%s' \"{addition}\" >> \"$1\"\n")).unwrap();
+    format!("sh {}", script.display())
+}
+
+#[test]
+fn editing_saves_the_file_and_rereads_its_variables() {
+    let dir = queries_dir("edit-rereads");
+    let editor = editor_appending(&dir, "\nSELECT :'extra';");
+
+    let output = sqlrunner(
+        &["--edit", "stats.sql", "day=2026-08-05"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+            ("EDITOR", &editor),
+        ],
+    );
+    let (stdout, stderr) = streams(&output);
+
+    // The edit was saved in the directory itself, and the variable it added is
+    // asked of the command line, psql never being started.
+    let sql = std::fs::read_to_string(dir.join("stats.sql")).unwrap();
+    assert_eq!(sql, "-- Daily counters\nSELECT :'day';\nSELECT :'extra';");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert_eq!(stderr, "sqlrunner: stats.sql: unset variables: extra\n");
+}
+
+#[test]
+fn editing_then_running_is_one_command() {
+    let dir = queries_dir("edit-then-run");
+
+    let output = sqlrunner(
+        &["--edit", "stats.sql", "day=2026-08-05"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+            // `true` is the shortest editor saving nothing and succeeding.
+            ("EDITOR", "true"),
+        ],
+    );
+    let (stdout, stderr) = streams(&output);
+
+    assert!(stdout.contains("-v day=2026-08-05"), "stdout: {stdout}");
+    assert!(stderr.contains("connection to server"), "stderr: {stderr}");
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn editing_needs_an_editor_and_stops_on_its_failure() {
+    let dir = queries_dir("edit-editor");
+    let environment = [
+        ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+        ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+    ];
+
+    // EDITOR is not in the environment the run is given.
+    let output = sqlrunner(&["--edit", "stats.sql", "day=2026-08-05"], &environment);
+    let (stdout, stderr) = streams(&output);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert_eq!(stderr, "sqlrunner: stats.sql: EDITOR is not set\n");
+
+    let mut failing = environment.to_vec();
+    failing.push(("EDITOR", "false"));
+    let output = sqlrunner(&["--edit", "stats.sql", "day=2026-08-05"], &failing);
+    let (stdout, stderr) = streams(&output);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert_eq!(stderr, "sqlrunner: stats.sql: false: exited with status 1\n");
+}
+
 #[test]
 fn completing_prints_one_candidate_per_line() {
     let dir = queries_dir("complete");

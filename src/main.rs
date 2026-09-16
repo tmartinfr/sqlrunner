@@ -38,6 +38,10 @@ struct Cli {
     #[arg(short, long, env = "SQLRUNNER_INTERACTIVE")]
     interactive: bool,
 
+    /// Open the file in $EDITOR before running it
+    #[arg(short, long, env = "SQLRUNNER_EDIT")]
+    edit: bool,
+
     /// Print the completion script to source for a shell
     #[arg(long, value_name = "SHELL")]
     completion: Option<Shell>,
@@ -349,6 +353,37 @@ fn execute(command: &[String]) -> Result<ExitCode, String> {
     }
 }
 
+/// Opens `path` in the editor named by `EDITOR`, which inherits the standard
+/// streams so it can drive the terminal.
+///
+/// The value may carry arguments, as `EDITOR='code -w'` does. There is no
+/// fallback: an unset editor is an error, as is one exiting non-zero, the edit
+/// having then been abandoned.
+fn edit_file(path: &Path) -> Result<(), String> {
+    let editor = std::env::var_os("EDITOR").unwrap_or_default();
+    let editor = editor.to_string_lossy();
+    let mut words = editor.split_whitespace();
+
+    let Some(program) = words.next() else {
+        return Err("EDITOR is not set".to_string());
+    };
+
+    // The editor takes over the terminal, so what we wrote must be out first.
+    io::Write::flush(&mut io::stdout()).map_err(|err| format!("stdout: {err}"))?;
+
+    let status = std::process::Command::new(program)
+        .args(words)
+        .arg(path)
+        .status()
+        .map_err(|err| format!("{program}: {err}"))?;
+
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(code) => Err(format!("{program}: exited with status {code}")),
+        None => Err(format!("{program}: terminated by a signal")),
+    }
+}
+
 /// Asks on `output` for a value for each name of `missing`, reading one line
 /// per name from `input`.
 ///
@@ -382,12 +417,17 @@ fn ask_variables(
 /// The file must be one of those listed, and the assignments must cover exactly
 /// the variables it uses, unless `interactive` is set: the variables left unset
 /// are then asked for on the terminal.
+///
+/// With `edit`, the file is opened in the editor first and the variables are
+/// those of what was saved, so an edit adding or removing one is taken into
+/// account.
 fn run(
     dir: &Path,
     dsn: Option<&str>,
     file: &str,
     assignments: &[String],
     interactive: bool,
+    edit: bool,
 ) -> Result<Vec<String>, String> {
     let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
@@ -395,6 +435,10 @@ fn run(
         .iter()
         .find(|path| path.file_name().is_some_and(|name| name == file))
         .ok_or_else(|| format!("{file}: no such .sql file in {}", dir.display()))?;
+
+    if edit {
+        edit_file(path).map_err(|err| format!("{file}: {err}"))?;
+    }
 
     let sql = std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
     let used: BTreeSet<String> = extract_variables(&sql).into_iter().collect();
@@ -474,14 +518,16 @@ fn list(dir: &Path) -> ExitCode {
 const VALUE_OPTIONS: [&str; 3] = ["--sql-dir", "--dsn", "--completion"];
 
 /// Every option, as offered when the word being completed starts with a dash.
-const OPTIONS: [&str; 9] = [
+const OPTIONS: [&str; 11] = [
     "--completion",
     "--dsn",
+    "--edit",
     "--help",
     "--interactive",
     "--sql-dir",
     "--version",
     "-V",
+    "-e",
     "-h",
     "-i",
 ];
@@ -640,6 +686,7 @@ fn main() -> ExitCode {
         &file,
         &cli.variables,
         cli.interactive,
+        cli.edit,
     ) {
         Ok(command) => command,
         Err(err) => {
@@ -853,6 +900,7 @@ mod tests {
             "orders.sql",
             &["owner=a's shop".to_string(), "start=2026-08-04".to_string()],
             false,
+            false,
         )
         .unwrap();
 
@@ -889,7 +937,9 @@ mod tests {
         std::fs::write(dir.join("stats.sql"), "SELECT :'day';").unwrap();
 
         let dsn = "postgresql://user@host:5432/db?sslmode=require";
-        let command = run(&dir, Some(dsn), "stats.sql", &["day=2026-08-04".into()], false).unwrap();
+        let command =
+            run(&dir, Some(dsn), "stats.sql", &["day=2026-08-04".into()], false, false)
+                .unwrap();
 
         // The `?` of the query string is quoted, as a shell would expand it.
         assert_eq!(
@@ -909,7 +959,9 @@ mod tests {
         let dir = temp_dir("quotes-a-dsn-needing-it");
         std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
 
-        let command = run(&dir, Some("host=localhost dbname=db"), "stats.sql", &[], false).unwrap();
+        let command =
+            run(&dir, Some("host=localhost dbname=db"), "stats.sql", &[], false, false)
+                .unwrap();
 
         assert_eq!(
             format_command(&command),
@@ -928,7 +980,7 @@ mod tests {
         std::fs::write(dir.join("stats.sql"), "SELECT 1;").unwrap();
 
         assert_eq!(
-            format_command(&run(&dir, None, "stats.sql", &[], false).unwrap()),
+            format_command(&run(&dir, None, "stats.sql", &[], false, false).unwrap()),
             format!("psql --quiet \\\n    -f {}", dir.join("stats.sql").display())
         );
     }
@@ -939,10 +991,12 @@ mod tests {
         std::fs::write(dir.join("orders.sql"), "SELECT :'start';").unwrap();
 
         // An unknown file, an unset variable, an unused one, and a duplicate.
-        assert!(run(&dir, None, "missing.sql", &[], false).is_err());
-        assert!(run(&dir, None, "orders.sql", &[], false).is_err());
-        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "other=2".into()], false).is_err());
-        assert!(run(&dir, None, "orders.sql", &["start=1".into(), "start=2".into()], false).is_err());
+        assert!(run(&dir, None, "missing.sql", &[], false, false).is_err());
+        assert!(run(&dir, None, "orders.sql", &[], false, false).is_err());
+        let twice = ["start=1".to_string(), "start=2".to_string()];
+        let unused = ["start=1".to_string(), "other=2".to_string()];
+        assert!(run(&dir, None, "orders.sql", &unused, false, false).is_err());
+        assert!(run(&dir, None, "orders.sql", &twice, false, false).is_err());
     }
 
     #[test]
@@ -951,8 +1005,8 @@ mod tests {
         std::fs::create_dir(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/orders.sql"), "SELECT 1;").unwrap();
 
-        assert!(run(&dir, None, "sub/orders.sql", &[], false).is_err());
-        assert!(run(&dir, None, "../orders.sql", &[], false).is_err());
+        assert!(run(&dir, None, "sub/orders.sql", &[], false, false).is_err());
+        assert!(run(&dir, None, "../orders.sql", &[], false, false).is_err());
     }
 
     #[test]
@@ -1000,6 +1054,7 @@ mod tests {
                 ("sql_dir", Some("SQLRUNNER_SQL_DIR")),
                 ("dsn", Some("SQLRUNNER_DSN")),
                 ("interactive", Some("SQLRUNNER_INTERACTIVE")),
+                ("edit", Some("SQLRUNNER_EDIT")),
                 ("completion", None),
             ]
         );

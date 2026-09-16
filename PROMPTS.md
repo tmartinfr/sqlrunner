@@ -43,3 +43,5 @@ Improve README.md by presenting first why the program is useful. Remove the earl
 stage mention.
 
 Add relevant emojis to README.md
+
+Add --edit option which open SQL file using EDITOR then run it

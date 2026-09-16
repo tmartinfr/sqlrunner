@@ -17,6 +17,8 @@ command line without a mistake.
   variables rather than edited into the file.
 - 🛡️ Missing a value is an error, not a query silently run on the wrong data. With
   `--interactive` the missing values are asked for instead.
+- ✏️ `--edit` opens the file in `$EDITOR` before running it, so a query is
+  tweaked and run in one command.
 - 👀 The psql command line is printed before running, quoted for a shell, so what
   happened is visible and can be pasted, tweaked or shared.
 - ⌨️ bash and zsh complete the file names and their variables, computed from the
@@ -101,6 +103,7 @@ Options:
       --sql-dir <DIR>       Directory containing the .sql files [env: SQLRUNNER_SQL_DIR]
       --dsn <DSN>           Connection string psql must connect with [env: SQLRUNNER_DSN]
   -i, --interactive         Ask for the variables left unset instead of failing [env: SQLRUNNER_INTERACTIVE]
+  -e, --edit                Open the file in $EDITOR before running it [env: SQLRUNNER_EDIT]
       --completion <SHELL>  Print the completion script to source for a shell [possible values: bash, zsh]
   -h, --help                Print help (see more with '--help')
   -V, --version             Print version
@@ -120,6 +123,7 @@ Every option can also be set through an environment variable named
 | `--sql-dir`     | `SQLRUNNER_SQL_DIR`     |
 | `--dsn`         | `SQLRUNNER_DSN`         |
 | `--interactive` | `SQLRUNNER_INTERACTIVE` |
+| `--edit`        | `SQLRUNNER_EDIT`        |
 
 The command line takes precedence, so a variable acts as a default:
 
@@ -277,6 +281,48 @@ end_date: sqlrunner: orders.sql: end_date: no value given
 
 Without `--interactive`, an unset variable is still the error described above.
 `--interactive` is unused when listing, which needs no variable.
+
+### ✏️ Editing before running
+
+With `--edit` (`-e`), the file is opened in the editor named by `EDITOR` before
+being run, so that a query needing a tweak is edited and run in one command:
+
+```sh
+$ sqlrunner --sql-dir ./example --edit users.sql user_id=42
+psql --quiet \
+    -v user_id=42 \
+    -f ./example/users.sql
+
+...
+```
+
+The file of the directory is edited in place: what is saved stays there, and is
+a change to the catalog like any other, to be kept or reverted with the version
+control the directory is under. Nothing is copied to a temporary file.
+
+The variables are read from what was saved, not from what the file held before,
+so an edit changing them is taken into account. A variable the edit added is
+unset like any other, an error or, with `--interactive`, asked for:
+
+```sh
+$ sqlrunner --sql-dir ./example --edit users.sql user_id=42
+sqlrunner: users.sql: unset variables: since
+```
+
+and a variable the edit removed makes the value given for it an error. A file
+which is not one of those listed is rejected before the editor is opened.
+
+`EDITOR` must be set: there is no fallback, as the editor a run opens should be
+a deliberate choice. Its value may carry arguments, as `EDITOR='code -w'` does,
+the file being appended to them. An editor exiting non-zero means the edit was
+abandoned, so psql is not started either:
+
+```sh
+$ sqlrunner --sql-dir ./example --edit users.sql user_id=42
+sqlrunner: users.sql: EDITOR is not set
+```
+
+`--edit` is unused when listing, which runs nothing.
 
 ### 🔤 Variables
 
