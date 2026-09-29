@@ -25,7 +25,7 @@ struct Cli {
         long,
         value_name = "DIR",
         env = "SQLRUNNER_SQL_DIR",
-        required_unless_present = "completion"
+        required_unless_present_any = ["completion", "list_dsn"]
     )]
     sql_dir: Option<PathBuf>,
 
@@ -45,6 +45,10 @@ struct Cli {
     /// Print the completion script to source for a shell
     #[arg(long, value_name = "SHELL")]
     completion: Option<Shell>,
+
+    /// Print a DSN for each entry of the password file, ~/.pgpass by default
+    #[arg(long)]
+    list_dsn: bool,
 
     /// File to run with psql, as listed when left out
     file: Option<String>,
@@ -514,16 +518,127 @@ fn list(dir: &Path) -> ExitCode {
     exit_code
 }
 
+/// Returns the password file libpq reads, `PGPASSFILE` or else `~/.pgpass`.
+fn pgpass_path() -> Option<PathBuf> {
+    match std::env::var_os("PGPASSFILE") {
+        Some(path) => Some(PathBuf::from(path)),
+        None => std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".pgpass")),
+    }
+}
+
+/// Returns the host, port, database and user of each entry of `content`, a
+/// password file, in the order they appear and without duplicate.
+///
+/// As libpq does, blank lines and `#` comments are skipped, `\` escapes the
+/// next character, and a line with fewer than five fields is ignored. The
+/// password, which the DSN leaves for psql to read from the file, is dropped.
+fn parse_pgpass(content: &str) -> Vec<[String; 4]> {
+    let mut entries = Vec::new();
+
+    for line in content.lines() {
+        if line.trim().is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = vec![String::new()];
+        let mut chars = line.chars();
+        // Only the first four separators count, the password taking the rest.
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => fields.last_mut().unwrap().extend(chars.next()),
+                ':' if fields.len() < 5 => fields.push(String::new()),
+                _ => fields.last_mut().unwrap().push(c),
+            }
+        }
+
+        if let [host, port, database, user, _password] = &fields[..] {
+            let entry = [host.clone(), port.clone(), database.clone(), user.clone()];
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+    }
+
+    entries
+}
+
+/// Percent-encodes `text` for a URI component, leaving the unreserved
+/// characters untouched.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
+/// Returns the `postgresql://` URI connecting to a password file entry.
+///
+/// A `*` field matches anything, so it is left out of the URI, psql then
+/// falling back to its default for it.
+fn format_dsn([host, port, database, user]: &[String; 4]) -> String {
+    let given = |field: &String| field != "*" && !field.is_empty();
+    let mut dsn = "postgresql://".to_string();
+
+    if given(user) {
+        dsn.push_str(&percent_encode(user));
+        dsn.push('@');
+    }
+    if given(host) {
+        // An IPv6 address is bracketed, its colons clashing with the port's.
+        if host.contains(':') {
+            dsn.push_str(&format!("[{host}]"));
+        } else {
+            dsn.push_str(&percent_encode(host));
+        }
+    }
+    if given(port) {
+        dsn.push(':');
+        dsn.push_str(port);
+    }
+    if given(database) {
+        dsn.push('/');
+        dsn.push_str(&percent_encode(database));
+    }
+
+    dsn
+}
+
+/// Prints a DSN for each entry of the password file, one per line.
+fn list_dsn() -> ExitCode {
+    let Some(path) = pgpass_path() else {
+        eprintln!("sqlrunner: neither PGPASSFILE nor HOME is set");
+        return ExitCode::FAILURE;
+    };
+
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            for entry in parse_pgpass(&content) {
+                println!("{}", format_dsn(&entry));
+            }
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("sqlrunner: {}: {err}", path.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The options taking a value, which therefore swallow the word after them.
 const VALUE_OPTIONS: [&str; 3] = ["--sql-dir", "--dsn", "--completion"];
 
 /// Every option, as offered when the word being completed starts with a dash.
-const OPTIONS: [&str; 11] = [
+const OPTIONS: [&str; 12] = [
     "--completion",
     "--dsn",
     "--edit",
     "--help",
     "--interactive",
+    "--list-dsn",
     "--sql-dir",
     "--version",
     "-V",
@@ -670,7 +785,12 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Clap requires --sql-dir unless --completion is given, which just returned.
+    if cli.list_dsn {
+        return list_dsn();
+    }
+
+    // Clap requires --sql-dir unless --completion or --list-dsn is given, which
+    // just returned.
     let Some(sql_dir) = cli.sql_dir else {
         eprintln!("sqlrunner: --sql-dir is required");
         return ExitCode::FAILURE;
@@ -1056,6 +1176,7 @@ mod tests {
                 ("interactive", Some("SQLRUNNER_INTERACTIVE")),
                 ("edit", Some("SQLRUNNER_EDIT")),
                 ("completion", None),
+                ("list_dsn", None),
             ]
         );
     }
@@ -1172,6 +1293,43 @@ mod tests {
         assert!(complete_words(&dir, &[""]).is_empty());
         assert!(complete_words(&dir, &["orders.sql", ""]).is_empty());
         assert!(complete(&[String::new()], None).is_empty());
+    }
+
+    #[test]
+    fn parses_the_entries_of_a_password_file() {
+        let content = "# local databases\n\
+                       localhost:5451:acceptance:acceptance:secret\n\
+                       \n\
+                       db.example.com:*:*:me:pass:with:colons\n\
+                       host\\:x:5432:db\\\\name:user:pw\n\
+                       too:few:fields\n\
+                       localhost:5451:acceptance:acceptance:other\n";
+
+        let entry = |fields: [&str; 4]| fields.map(String::from);
+        assert_eq!(
+            parse_pgpass(content),
+            vec![
+                entry(["localhost", "5451", "acceptance", "acceptance"]),
+                entry(["db.example.com", "*", "*", "me"]),
+                entry(["host:x", "5432", "db\\name", "user"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn formats_a_dsn_without_the_wildcards() {
+        let entry = |fields: [&str; 4]| fields.map(String::from);
+
+        assert_eq!(
+            format_dsn(&entry(["localhost", "5451", "acceptance", "acceptance"])),
+            "postgresql://acceptance@localhost:5451/acceptance"
+        );
+        assert_eq!(format_dsn(&entry(["db.example.com", "*", "*", "me"])), "postgresql://me@db.example.com");
+        assert_eq!(format_dsn(&entry(["*", "*", "*", "*"])), "postgresql://");
+        assert_eq!(
+            format_dsn(&entry(["::1", "5432", "my db", "a@b"])),
+            "postgresql://a%40b@[::1]:5432/my%20db"
+        );
     }
 
     #[test]

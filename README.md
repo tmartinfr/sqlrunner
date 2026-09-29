@@ -21,6 +21,8 @@ command line without a mistake.
   tweaked and run in one command.
 - 👀 The psql command line is printed before running, quoted for a shell, so what
   happened is visible and can be pasted, tweaked or shared.
+- 🔑 `--list-dsn` prints a DSN for each entry of `~/.pgpass`, the databases at
+  hand, ready to be passed to `--dsn`.
 - ⌨️ bash and zsh complete the file names and their variables, computed from the
   directory in use.
 
@@ -105,6 +107,7 @@ Options:
   -i, --interactive         Ask for the variables left unset instead of failing [env: SQLRUNNER_INTERACTIVE]
   -e, --edit                Open the file in $EDITOR before running it [env: SQLRUNNER_EDIT]
       --completion <SHELL>  Print the completion script to source for a shell [possible values: bash, zsh]
+      --list-dsn            Print a DSN for each entry of the password file, ~/.pgpass by default
   -h, --help                Print help (see more with '--help')
   -V, --version             Print version
 ```
@@ -145,7 +148,7 @@ psql --quiet \
 ...
 ```
 
-`--sql-dir` stays mandatory, except with `--completion`: setting neither the
+`--sql-dir` stays mandatory, except with `--completion` and `--list-dsn`: setting neither the
 option nor its variable is an error. The value of `SQLRUNNER_DSN` is kept out of
 `--help`, as a connection string may embed a password.
 
@@ -247,6 +250,34 @@ psql --quiet \
 Without `--dsn`, no `-d` is emitted and psql takes its connection settings from
 the environment (`PGHOST`, `PGDATABASE`, ...) as usual. `--dsn` is unused when
 listing, which reads no database.
+
+### 🔑 Listing the DSN
+
+`--list-dsn` prints a `postgresql://` URI for each entry of the password file
+libpq reads, `PGPASSFILE` or else `~/.pgpass`, one per line, in the order of the
+file:
+
+```sh
+$ cat ~/.pgpass
+localhost:5451:acceptance:acceptance:secret
+db.example.com:*:*:me:secret
+$ sqlrunner --list-dsn
+postgresql://acceptance@localhost:5451/acceptance
+postgresql://me@db.example.com
+```
+
+The password is left out: psql finds it in the same file when connecting with
+one of these DSN. A `*` field, which matches anything, is left out too, psql
+then using its default for it. Blank lines, `#` comments and lines with fewer
+than five fields are skipped, `\` escapes a `:` or a `\` as libpq reads them,
+and entries differing only by their password are printed once. A missing or
+unreadable file is reported on stderr and exits with status 1.
+
+One DSN is picked and run with in a single line, with fzf for instance:
+
+```sh
+sqlrunner --dsn "$(sqlrunner --list-dsn | fzf)" users.sql user_id=42
+```
 
 ### 💬 Asking for the variables
 

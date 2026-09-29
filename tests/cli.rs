@@ -321,3 +321,30 @@ fn the_completion_script_needs_no_sql_dir() {
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stdout.contains("complete -F _sqlrunner sqlrunner"), "stdout: {stdout}");
 }
+
+#[test]
+fn listing_the_dsn_reads_the_password_file() {
+    let dir = queries_dir("list-dsn");
+    let pgpass = dir.join("pgpass");
+    std::fs::write(
+        &pgpass,
+        "localhost:5451:acceptance:acceptance:secret\n*:*:*:me:pw\n",
+    )
+    .unwrap();
+
+    // No --sql-dir is needed, and the passwords stay out of the output.
+    let output = sqlrunner(&["--list-dsn"], &[("PGPASSFILE", pgpass.to_str().unwrap())]);
+    let (stdout, stderr) = streams(&output);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "postgresql://acceptance@localhost:5451/acceptance\npostgresql://me@\n"
+    );
+
+    // The file defaults to ~/.pgpass, and a missing one is an error.
+    let output = sqlrunner(&["--list-dsn"], &[("HOME", dir.to_str().unwrap())]);
+    let (stdout, stderr) = streams(&output);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert!(stderr.starts_with(&format!("sqlrunner: {}: ", dir.join(".pgpass").display())));
+}
