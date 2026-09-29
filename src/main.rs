@@ -42,6 +42,10 @@ struct Cli {
     #[arg(short, long, env = "SQLRUNNER_EDIT")]
     edit: bool,
 
+    /// Pick the DSN among those of the password file with fzf, over --dsn
+    #[arg(short, long, env = "SQLRUNNER_SELECT_DSN")]
+    select_dsn: bool,
+
     /// Print the completion script to source for a shell
     #[arg(long, value_name = "SHELL")]
     completion: Option<Shell>,
@@ -416,7 +420,8 @@ fn ask_variables(
     Ok(variables)
 }
 
-/// Returns the psql command running the `file` of `dir` with `assignments`.
+/// Returns the path of the `file` of `dir` and the variables to run it with,
+/// taken from `assignments`.
 ///
 /// The file must be one of those listed, and the assignments must cover exactly
 /// the variables it uses, unless `interactive` is set: the variables left unset
@@ -425,14 +430,13 @@ fn ask_variables(
 /// With `edit`, the file is opened in the editor first and the variables are
 /// those of what was saved, so an edit adding or removing one is taken into
 /// account.
-fn run(
+fn resolve(
     dir: &Path,
-    dsn: Option<&str>,
     file: &str,
     assignments: &[String],
     interactive: bool,
     edit: bool,
-) -> Result<Vec<String>, String> {
+) -> Result<(PathBuf, BTreeMap<String, String>), String> {
     let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
     let path = files
@@ -477,7 +481,7 @@ fn run(
         variables.extend(asked);
     }
 
-    Ok(psql_command(path, dsn, &variables))
+    Ok((path.clone(), variables))
 }
 
 /// Prints the `.sql` files of `dir` and the variables they use.
@@ -607,24 +611,62 @@ fn format_dsn([host, port, database, user]: &[String; 4]) -> String {
     dsn
 }
 
+/// Returns a DSN for each entry of the password file.
+fn read_dsns() -> Result<Vec<String>, String> {
+    let path = pgpass_path().ok_or("neither PGPASSFILE nor HOME is set")?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
+
+    Ok(parse_pgpass(&content).iter().map(format_dsn).collect())
+}
+
 /// Prints a DSN for each entry of the password file, one per line.
 fn list_dsn() -> ExitCode {
-    let Some(path) = pgpass_path() else {
-        eprintln!("sqlrunner: neither PGPASSFILE nor HOME is set");
-        return ExitCode::FAILURE;
-    };
-
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            for entry in parse_pgpass(&content) {
-                println!("{}", format_dsn(&entry));
+    match read_dsns() {
+        Ok(dsns) => {
+            for dsn in dsns {
+                println!("{dsn}");
             }
             ExitCode::SUCCESS
         }
         Err(err) => {
-            eprintln!("sqlrunner: {}: {err}", path.display());
+            eprintln!("sqlrunner: {err}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Returns the DSN picked with fzf among those of the password file.
+///
+/// fzf draws on the terminal itself, reading the candidates from its standard
+/// input and writing the pick to its standard output. Leaving it without a
+/// pick, as Esc does, is an error.
+fn select_dsn() -> Result<String, String> {
+    let dsns = read_dsns()?;
+    if dsns.is_empty() {
+        return Err("no DSN in the password file".to_string());
+    }
+
+    let mut child = std::process::Command::new("fzf")
+        .args(["--prompt", "DSN> "])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("fzf: {err}"))?;
+
+    // A write error only means fzf quit early, which its status tells better.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = io::Write::write_all(&mut stdin, format!("{}\n", dsns.join("\n")).as_bytes());
+    }
+
+    let output = child.wait_with_output().map_err(|err| format!("fzf: {err}"))?;
+
+    match output.status.code() {
+        Some(0) => Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string()),
+        // 1 is no match, 130 an interruption by Esc or Ctrl-C.
+        Some(1 | 130) => Err("no DSN selected".to_string()),
+        Some(code) => Err(format!("fzf: exited with status {code}")),
+        None => Err("fzf: terminated by a signal".to_string()),
     }
 }
 
@@ -632,19 +674,21 @@ fn list_dsn() -> ExitCode {
 const VALUE_OPTIONS: [&str; 3] = ["--sql-dir", "--dsn", "--completion"];
 
 /// Every option, as offered when the word being completed starts with a dash.
-const OPTIONS: [&str; 12] = [
+const OPTIONS: [&str; 14] = [
     "--completion",
     "--dsn",
     "--edit",
     "--help",
     "--interactive",
     "--list-dsn",
+    "--select-dsn",
     "--sql-dir",
     "--version",
     "-V",
     "-e",
     "-h",
     "-i",
+    "-s",
 ];
 
 /// Returns the completion script for `shell`.
@@ -800,14 +844,15 @@ fn main() -> ExitCode {
         return list(&sql_dir);
     };
 
-    let command = match run(
-        &sql_dir,
-        cli.dsn.as_deref(),
-        &file,
-        &cli.variables,
-        cli.interactive,
-        cli.edit,
-    ) {
+    // The DSN is picked last, once the file and its variables are known to be
+    // runnable, so that a mistake is not reported after the pick.
+    let command = resolve(&sql_dir, &file, &cli.variables, cli.interactive, cli.edit)
+        .and_then(|(path, variables)| {
+            let dsn = if cli.select_dsn { Some(select_dsn()?) } else { cli.dsn };
+            Ok(psql_command(&path, dsn.as_deref(), &variables))
+        });
+
+    let command = match command {
         Ok(command) => command,
         Err(err) => {
             eprintln!("sqlrunner: {err}");
@@ -830,6 +875,19 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Returns the psql command running `file`, as the main function does.
+    fn run(
+        dir: &Path,
+        dsn: Option<&str>,
+        file: &str,
+        assignments: &[String],
+        interactive: bool,
+        edit: bool,
+    ) -> Result<Vec<String>, String> {
+        let (path, variables) = resolve(dir, file, assignments, interactive, edit)?;
+        Ok(psql_command(&path, dsn, &variables))
+    }
 
     /// Creates an empty directory dedicated to a single test.
     fn temp_dir(name: &str) -> PathBuf {
@@ -1175,6 +1233,7 @@ mod tests {
                 ("dsn", Some("SQLRUNNER_DSN")),
                 ("interactive", Some("SQLRUNNER_INTERACTIVE")),
                 ("edit", Some("SQLRUNNER_EDIT")),
+                ("select_dsn", Some("SQLRUNNER_SELECT_DSN")),
                 ("completion", None),
                 ("list_dsn", None),
             ]
@@ -1278,7 +1337,7 @@ mod tests {
     fn completes_the_options_and_the_shells() {
         let dir = completion_dir("completes-options");
 
-        assert_eq!(complete_words(&dir, &["--s"]), vec!["--sql-dir"]);
+        assert_eq!(complete_words(&dir, &["--s"]), vec!["--select-dsn", "--sql-dir"]);
         assert_eq!(complete_words(&dir, &["--completion", ""]), vec!["bash", "zsh"]);
         // The shell knows the paths better than we do.
         assert!(complete_words(&dir, &["--sql-dir", ""]).is_empty());

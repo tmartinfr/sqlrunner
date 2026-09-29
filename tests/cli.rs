@@ -348,3 +348,96 @@ fn listing_the_dsn_reads_the_password_file() {
     assert!(stdout.is_empty(), "stdout: {stdout}");
     assert!(stderr.starts_with(&format!("sqlrunner: {}: ", dir.join(".pgpass").display())));
 }
+
+/// Writes into `dir` a fake fzf running `script`, and returns the `PATH` putting
+/// it before the real one.
+fn fake_fzf(dir: &std::path::Path, script: &str) -> String {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fzf = bin.join("fzf");
+    std::fs::write(&fzf, format!("#!/bin/sh\n{script}\n")).unwrap();
+    std::fs::set_permissions(&fzf, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default())
+}
+
+/// Writes into `dir` a password file with two entries, and returns its path.
+fn two_entry_pgpass(dir: &std::path::Path) -> String {
+    let pgpass = dir.join("pgpass");
+    std::fs::write(
+        &pgpass,
+        "127.0.0.1:1:first:me:pw\n127.0.0.1:1:second:me:pw\n",
+    )
+    .unwrap();
+    pgpass.display().to_string()
+}
+
+#[test]
+fn selecting_the_dsn_runs_with_the_pick() {
+    let dir = queries_dir("select-dsn");
+    let pgpass = two_entry_pgpass(&dir);
+    // The fake fzf picks the second candidate.
+    let path = fake_fzf(&dir, "sed -n 2p");
+
+    let output = sqlrunner(
+        &["--select-dsn", "stats.sql", "day=2026-08-05"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            // The pick wins over the DSN of the environment.
+            ("SQLRUNNER_DSN", "host=other dbname=from_env"),
+            ("PGPASSFILE", &pgpass),
+            ("PATH", &path),
+        ],
+    );
+    let (stdout, stderr) = streams(&output);
+
+    assert!(stdout.contains("-d postgresql://me@127.0.0.1:1/second"), "stdout: {stdout}");
+    assert!(!stdout.contains("from_env"), "stdout: {stdout}");
+    assert!(stderr.contains("connection to server"), "stderr: {stderr}");
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn selecting_no_dsn_runs_nothing() {
+    let dir = queries_dir("select-dsn-cancel");
+    let pgpass = two_entry_pgpass(&dir);
+    // What fzf exits with when left with Esc.
+    let path = fake_fzf(&dir, "cat > /dev/null; exit 130");
+
+    let output = sqlrunner(
+        &["-s", "stats.sql", "day=2026-08-05"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("PGPASSFILE", &pgpass),
+            ("PATH", &path),
+        ],
+    );
+    let (stdout, stderr) = streams(&output);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert_eq!(stderr, "sqlrunner: no DSN selected\n");
+}
+
+#[test]
+fn selecting_comes_after_checking_the_file() {
+    let dir = queries_dir("select-dsn-after-check");
+    let pgpass = two_entry_pgpass(&dir);
+    // Reached only if the file were run despite its unset variable.
+    let path = fake_fzf(&dir, "echo fzf ran >&2; exit 2");
+
+    let output = sqlrunner(
+        &["--select-dsn", "stats.sql"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("PGPASSFILE", &pgpass),
+            ("PATH", &path),
+        ],
+    );
+    let (_, stderr) = streams(&output);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr, "sqlrunner: stats.sql: unset variables: day\n");
+}

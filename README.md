@@ -22,7 +22,7 @@ command line without a mistake.
 - 👀 The psql command line is printed before running, quoted for a shell, so what
   happened is visible and can be pasted, tweaked or shared.
 - 🔑 `--list-dsn` prints a DSN for each entry of `~/.pgpass`, the databases at
-  hand, ready to be passed to `--dsn`.
+  hand, ready to be passed to `--dsn`, and `--select-dsn` picks one with fzf.
 - ⌨️ bash and zsh complete the file names and their variables, computed from the
   directory in use.
 
@@ -33,6 +33,7 @@ are read from them, so the catalog is just the directory under version control.
 
 - Rust (edition 2024, tested with cargo 1.93)
 - psql in the `PATH`, to run a file
+- fzf in the `PATH`, only for `--select-dsn`
 
 ## 🔧 Install
 
@@ -106,6 +107,7 @@ Options:
       --dsn <DSN>           Connection string psql must connect with [env: SQLRUNNER_DSN]
   -i, --interactive         Ask for the variables left unset instead of failing [env: SQLRUNNER_INTERACTIVE]
   -e, --edit                Open the file in $EDITOR before running it [env: SQLRUNNER_EDIT]
+  -s, --select-dsn          Pick the DSN among those of the password file with fzf, over --dsn [env: SQLRUNNER_SELECT_DSN]
       --completion <SHELL>  Print the completion script to source for a shell [possible values: bash, zsh]
       --list-dsn            Print a DSN for each entry of the password file, ~/.pgpass by default
   -h, --help                Print help (see more with '--help')
@@ -127,6 +129,7 @@ Every option can also be set through an environment variable named
 | `--dsn`         | `SQLRUNNER_DSN`         |
 | `--interactive` | `SQLRUNNER_INTERACTIVE` |
 | `--edit`        | `SQLRUNNER_EDIT`        |
+| `--select-dsn`  | `SQLRUNNER_SELECT_DSN`  |
 
 The command line takes precedence, so a variable acts as a default:
 
@@ -273,11 +276,38 @@ than five fields are skipped, `\` escapes a `:` or a `\` as libpq reads them,
 and entries differing only by their password are printed once. A missing or
 unreadable file is reported on stderr and exits with status 1.
 
-One DSN is picked and run with in a single line, with fzf for instance:
+### 🎯 Selecting the DSN
+
+With `--select-dsn` (`-s`), the DSN is picked with fzf among those `--list-dsn`
+prints, right before psql is started:
 
 ```sh
-sqlrunner --dsn "$(sqlrunner --list-dsn | fzf)" users.sql user_id=42
+$ sqlrunner --sql-dir ./example --select-dsn users.sql user_id=42
+DSN> acc
+  2/2 ------------------------------------------------------------
+> postgresql://acceptance@localhost:5451/acceptance
+psql --quiet \
+    -d postgresql://acceptance@localhost:5451/acceptance \
+    -v user_id=42 \
+    -f ./example/users.sql
+
+...
 ```
+
+The pick is used over `--dsn` and `SQLRUNNER_DSN`, so setting
+`SQLRUNNER_SELECT_DSN` in the environment makes every run ask. fzf is only
+started once the file is known to be runnable: an unknown file or an unset
+variable is reported first, and the edit and the questions of `--edit` and
+`--interactive` come before the pick. Leaving fzf without a pick, with Esc or
+Ctrl-C, runs nothing and exits with status 1:
+
+```sh
+$ sqlrunner --sql-dir ./example --select-dsn users.sql user_id=42
+sqlrunner: no DSN selected
+```
+
+as does a password file that is missing or holds no entry, or fzf not being in
+the `PATH`. `--select-dsn` is unused when listing, which reads no database.
 
 ### 💬 Asking for the variables
 
