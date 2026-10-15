@@ -370,8 +370,7 @@ $ sqlrunner --sql-dir ./example --edit users.sql user_id=42
 sqlrunner: users.sql: unset variables: since
 ```
 
-and a variable the edit removed makes the value given for it an error. A file
-which is not one of those listed is rejected before the editor is opened.
+and a variable the edit removed makes the value given for it an error.
 
 `EDITOR` must be set: there is no fallback, as the editor a run opens should be
 a deliberate choice. Its value may carry arguments, as `EDITOR='code -w'` does,
@@ -382,6 +381,19 @@ abandoned, so psql is not started either:
 $ sqlrunner --sql-dir ./example --edit users.sql user_id=42
 sqlrunner: users.sql: EDITOR is not set
 ```
+
+A file missing from the directory is offered to be created, the question being
+asked on stderr and anything but an answer starting with `y` declining it:
+
+```sh
+$ sqlrunner --sql-dir ./example --edit new.sql
+new.sql: no such .sql file in ./example, create it? [y/N] y
+```
+
+The file is created empty, then edited and run like any other. An edit
+abandoned, the editor exiting non-zero, removes it again. Only a plain name
+ending in `.sql` is offered, as only such a file would be listed; any other
+file which is not one of those listed is rejected before the editor is opened.
 
 `--edit` is unused when listing, which runs nothing.
 

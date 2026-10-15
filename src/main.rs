@@ -420,6 +420,33 @@ fn ask_variables(
     Ok(variables)
 }
 
+/// Asks `question` on `output` and reads the answer from `input`, a line
+/// starting with `y` or `Y` meaning yes.
+///
+/// Anything else, an empty line or the end of the input included, means no.
+fn confirm(
+    question: &str,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<bool, String> {
+    write!(output, "{question} [y/N] ").map_err(|err| err.to_string())?;
+    output.flush().map_err(|err| err.to_string())?;
+
+    let mut line = String::new();
+    input.read_line(&mut line).map_err(|err| err.to_string())?;
+
+    Ok(line.trim_start().starts_with(['y', 'Y']))
+}
+
+/// Tells whether `file` names a `.sql` file directly in a directory, as only
+/// those are listed and can therefore be created.
+fn is_sql_file_name(file: &str) -> bool {
+    let path = Path::new(file);
+
+    path.file_name().is_some_and(|name| name == file)
+        && path.extension().is_some_and(|ext| ext == "sql")
+}
+
 /// Returns the path of the `file` of `dir` and the variables to run it with,
 /// taken from `assignments`.
 ///
@@ -429,7 +456,9 @@ fn ask_variables(
 ///
 /// With `edit`, the file is opened in the editor first and the variables are
 /// those of what was saved, so an edit adding or removing one is taken into
-/// account.
+/// account. A file missing from the directory is then offered to be created,
+/// empty, the question being asked on the terminal; it is removed again if
+/// the edit is abandoned.
 fn resolve(
     dir: &Path,
     file: &str,
@@ -439,16 +468,42 @@ fn resolve(
 ) -> Result<(PathBuf, BTreeMap<String, String>), String> {
     let files = list_sql_files(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
 
-    let path = files
+    let not_found = || format!("{file}: no such .sql file in {}", dir.display());
+    let found = files
         .iter()
-        .find(|path| path.file_name().is_some_and(|name| name == file))
-        .ok_or_else(|| format!("{file}: no such .sql file in {}", dir.display()))?;
+        .find(|path| path.file_name().is_some_and(|name| name == file));
 
-    if edit {
-        edit_file(path).map_err(|err| format!("{file}: {err}"))?;
+    let (path, created) = match found {
+        Some(path) => (path.clone(), false),
+        None if edit && is_sql_file_name(file) && !dir.join(file).exists() => {
+            // The question goes to stderr, as the variables asked for do.
+            let question = format!("{file}: no such .sql file in {}, create it?", dir.display());
+            let create = confirm(&question, &mut io::stdin().lock(), &mut io::stderr())
+                .map_err(|err| format!("{file}: {err}"))?;
+            if !create {
+                return Err(not_found());
+            }
+
+            let path = dir.join(file);
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|err| format!("{}: {err}", path.display()))?;
+            (path, true)
+        }
+        None => return Err(not_found()),
+    };
+
+    if edit && let Err(err) = edit_file(&path) {
+        // A file created for an abandoned edit would be left empty.
+        if created {
+            let _ = std::fs::remove_file(&path);
+        }
+        return Err(format!("{file}: {err}"));
     }
 
-    let sql = std::fs::read_to_string(path).map_err(|err| format!("{}: {err}", path.display()))?;
+    let sql = std::fs::read_to_string(&path).map_err(|err| format!("{}: {err}", path.display()))?;
     let used: BTreeSet<String> = extract_variables(&sql).into_iter().collect();
     let mut variables = BTreeMap::new();
 
@@ -481,7 +536,7 @@ fn resolve(
         variables.extend(asked);
     }
 
-    Ok((path.clone(), variables))
+    Ok((path, variables))
 }
 
 /// Prints the `.sql` files of `dir` and the variables they use.
@@ -1267,6 +1322,32 @@ mod tests {
         let err = ask_variables(&["day", "owner"], &mut input, &mut Vec::new()).unwrap_err();
 
         assert_eq!(err, "owner: no value given");
+    }
+
+    #[test]
+    fn confirming_needs_a_yes() {
+        let answer = |input: &str| confirm("Create?", &mut input.as_bytes(), &mut Vec::new());
+
+        assert!(answer("y\n").unwrap());
+        assert!(answer("Yes\n").unwrap());
+        assert!(!answer("n\n").unwrap());
+        assert!(!answer("\n").unwrap());
+        // An input ending before an answer is a no.
+        assert!(!answer("").unwrap());
+
+        let mut output = Vec::new();
+        confirm("Create?", &mut "y\n".as_bytes(), &mut output).unwrap();
+        assert_eq!(String::from_utf8(output).unwrap(), "Create? [y/N] ");
+    }
+
+    #[test]
+    fn only_a_sql_file_name_can_be_created() {
+        assert!(is_sql_file_name("orders.sql"));
+        assert!(!is_sql_file_name("orders.txt"));
+        assert!(!is_sql_file_name(".sql"));
+        assert!(!is_sql_file_name("sub/orders.sql"));
+        assert!(!is_sql_file_name("../orders.sql"));
+        assert!(!is_sql_file_name("orders.sql/"));
     }
 
     /// Creates a directory holding two files, one of them using two variables.

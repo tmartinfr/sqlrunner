@@ -298,6 +298,108 @@ fn editing_needs_an_editor_and_stops_on_its_failure() {
 }
 
 #[test]
+fn editing_a_missing_file_offers_to_create_it() {
+    let dir = queries_dir("edit-create");
+    let editor = editor_appending(&dir, "SELECT :'day';");
+
+    let output = sqlrunner_with_input(
+        &["--edit", "new.sql", "day=2026-08-05"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+            ("EDITOR", &editor),
+        ],
+        "y\n",
+    );
+    let (stdout, stderr) = streams(&output);
+
+    // The file was created, then edited, then run.
+    let sql = std::fs::read_to_string(dir.join("new.sql")).unwrap();
+    assert_eq!(sql, "SELECT :'day';");
+    assert!(stdout.contains("-v day=2026-08-05"), "stdout: {stdout}");
+    assert!(
+        stderr.starts_with(&format!(
+            "new.sql: no such .sql file in {}, create it? [y/N] ",
+            dir.display()
+        )),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("connection to server"), "stderr: {stderr}");
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn declining_the_creation_runs_nothing() {
+    let dir = queries_dir("edit-create-declined");
+    let environment = [
+        ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+        ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+        ("EDITOR", "true"),
+    ];
+
+    // A no, then an input ending before any answer.
+    for input in ["n\n", ""] {
+        let output = sqlrunner_with_input(&["--edit", "new.sql"], &environment, input);
+        let (stdout, stderr) = streams(&output);
+
+        assert!(!dir.join("new.sql").exists());
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stdout.is_empty(), "stdout: {stdout}");
+        assert_eq!(
+            stderr,
+            format!(
+                "new.sql: no such .sql file in {0}, create it? [y/N] \
+                 sqlrunner: new.sql: no such .sql file in {0}\n",
+                dir.display()
+            )
+        );
+    }
+}
+
+#[test]
+fn an_abandoned_edit_removes_the_created_file() {
+    let dir = queries_dir("edit-create-abandoned");
+
+    let output = sqlrunner_with_input(
+        &["--edit", "new.sql"],
+        &[
+            ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+            ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+            ("EDITOR", "false"),
+        ],
+        "y\n",
+    );
+    let (_, stderr) = streams(&output);
+
+    assert!(!dir.join("new.sql").exists());
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr.ends_with("sqlrunner: new.sql: false: exited with status 1\n"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn only_editing_offers_to_create_a_sql_file() {
+    let dir = queries_dir("edit-create-refused");
+    let environment = [
+        ("SQLRUNNER_SQL_DIR", dir.to_str().unwrap()),
+        ("SQLRUNNER_DSN", UNREACHABLE_DSN),
+        ("EDITOR", "true"),
+    ];
+
+    // Without --edit, and for a name which would not be listed, nothing is asked.
+    for arguments in [&["new.sql"][..], &["--edit", "new.txt"], &["--edit", "sub/new.sql"]] {
+        let output = sqlrunner_with_input(arguments, &environment, "y\n");
+        let (_, stderr) = streams(&output);
+
+        assert_eq!(output.status.code(), Some(1));
+        assert!(stderr.starts_with("sqlrunner: "), "stderr: {stderr}");
+    }
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+}
+
+#[test]
 fn completing_prints_one_candidate_per_line() {
     let dir = queries_dir("complete");
     let environment = [("SQLRUNNER_SQL_DIR", dir.to_str().unwrap())];

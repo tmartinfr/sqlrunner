@@ -49,3 +49,5 @@ Add --edit option which open SQL file using EDITOR then run it
 --list-dsn options which construct a list of DSN by reading ~/.pgpass and output them
 
 --select-dsn option which open a fzf selection of the available DSNs before running the query
+
+Ask if SQL file must be created if it does not exist and -e is used
